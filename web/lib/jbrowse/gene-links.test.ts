@@ -191,29 +191,39 @@ describe("placeGeneEverywhere / searchGenes", () => {
     expect(calls[0].ops).toContainEqual(["in", "gene_id", ["AT1G01010", "AT1G01020"]]);
   });
 
-  it("searches IDs and names by part, case-insensitively, for a version", async () => {
+  it("searches IDs and names by part, case-insensitively, in a build, by gene ID", async () => {
     const { supabase, calls } = fakeClient([{ data: [hit("AT1G01010", "athaliana_col0", 2)], error: null }]);
-    const found = await searchGenes(supabase, "nac0", 25);
+    const found = await searchGenes(supabase, "nac0", 25, [4]);
     expect(found).toHaveLength(1);
     expect(calls[0].ops).toContainEqual(["or", "gene_id.ilike.*nac0*,gene_name.ilike.*nac0*"]);
+    expect(calls[0].ops).toContainEqual(["eq", "browser_build_id", 4]);
+    expect(calls[0].ops).toContainEqual(["order", "gene_id"]);
     expect(calls[0].ops).toContainEqual(["limit", 25]);
   });
 
-  it("searches only the given browser builds", async () => {
-    const { supabase, calls } = fakeClient([{ data: [], error: null }]);
-    await searchGenes(supabase, "nac0", 100, [4, 7]);
-    expect(calls[0].ops).toContainEqual(["in", "browser_build_id", [4, 7]]);
+  it("searches each build on its own, so one genome's matches cannot crowd out another's", async () => {
+    const { supabase, calls } = fakeClient([
+      { data: [hit("AT1G01010", "a", 1)], error: null },
+      { data: [hit("AT1G01010", "b", 1)], error: null },
+    ]);
+    const found = await searchGenes(supabase, "nac0", 50, [4, 7]);
+    expect(calls.map((c) => c.ops.find((op) => op[0] === "eq" && op[1] === "browser_build_id"))).toEqual([
+      ["eq", "browser_build_id", 4],
+      ["eq", "browser_build_id", 7],
+    ]);
+    expect(calls.every((c) => c.ops.some((op) => op[0] === "limit" && op[1] === 50))).toBe(true);
+    expect(found.map((p) => p.assembly)).toEqual(["a.v1", "b.v1"]);
   });
 
-  it("searches every build when none is given", async () => {
-    const { supabase, calls } = fakeClient([{ data: [], error: null }]);
-    await searchGenes(supabase, "nac0", 100, null);
-    expect(calls[0].ops.some((op) => op[0] === "in")).toBe(false);
+  it("searches nothing without builds", async () => {
+    const { supabase, calls } = fakeClient([]);
+    await expect(searchGenes(supabase, "nac0", 25, [])).resolves.toEqual([]);
+    expect(calls).toHaveLength(0);
   });
 
   it.each(["", " ", "a", "x,y", "a(b", "a*b"])("searches nothing for %j", async (text) => {
     const { supabase, calls } = fakeClient([]);
-    await expect(searchGenes(supabase, text, 25)).resolves.toEqual([]);
+    await expect(searchGenes(supabase, text, 25, [4])).resolves.toEqual([]);
     expect(calls).toHaveLength(0);
   });
 });

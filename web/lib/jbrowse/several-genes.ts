@@ -9,11 +9,14 @@ export const JOIN_DISTANCE_BP = 1_000_000;
 /** Padding added to each side of a region, as a share of its length. */
 export const PADDING_SHARE = 0.1;
 
-/** How the browser opens several picked genes: their regions (null for the whole genome), a
- * highlight per gene, and the page's lines about picks it could not open. */
+/** Smallest region, as a share of all regions' length, so none is too thin to see. */
+export const MIN_REGION_SHARE = 0.02;
+
+/** The genes a `?genes=` link placed in one genome version, and the page's lines about picks it
+ * could not open. */
 export interface PicksPlan {
-  loc: string | null;
-  highlight: string[];
+  assembly: string;
+  places: GenePlace[];
   notes: string[];
 }
 
@@ -32,9 +35,9 @@ export function readPicks(param: string | null | undefined): { genes: string[]; 
   return genes.length > MAX_PICKS ? { genes: [], tooMany: genes.length } : { genes, tooMany: null };
 }
 
-/** The genes' regions: each contig in order, genes within JOIN_DISTANCE_BP of the one before
- * joined, each region padded by PADDING_SHARE (never before position 1). */
-export function groupRegions(places: GenePlace[]): Region[] {
+/** The genes' regions: genes within JOIN_DISTANCE_BP of the one before joined, padded by
+ * PADDING_SHARE, widened to MIN_REGION_SHARE, kept on the contig, then merged where they meet. */
+export function groupRegions(places: GenePlace[], contigLengths: Record<string, number> = {}): Region[] {
   const sorted = [...places].sort(
     (a, b) => a.contig.localeCompare(b.contig, undefined, { numeric: true }) || a.start - b.start,
   );
@@ -48,10 +51,26 @@ export function groupRegions(places: GenePlace[]): Region[] {
       joined.push({ contig: place.contig, start: place.start, end: place.end, genes: [place.gene] });
     }
   }
-  return joined.map((r) => {
+  const padded = joined.map((r) => {
     const pad = Math.round((r.end - r.start + 1) * PADDING_SHARE);
-    return { ...r, start: Math.max(1, r.start - pad), end: r.end + pad };
+    return { ...r, start: r.start - pad, end: r.end + pad };
   });
+  const minWidth = Math.ceil(padded.reduce((sum, r) => sum + r.end - r.start + 1, 0) * MIN_REGION_SHARE);
+  const merged: Region[] = [];
+  for (const r of padded) {
+    const extra = Math.max(0, minWidth - (r.end - r.start + 1));
+    const length = contigLengths[r.contig];
+    const start = Math.max(1, r.start - Math.floor(extra / 2));
+    const end = Math.min(length ?? Infinity, r.end + Math.ceil(extra / 2));
+    const last = merged.at(-1);
+    if (last && last.contig === r.contig && start <= last.end + 1) {
+      last.end = Math.max(last.end, end);
+      last.genes.push(...r.genes);
+    } else {
+      merged.push({ ...r, start, end });
+    }
+  }
+  return merged;
 }
 
 /** The regions as one JBrowse location: several are shown side by side. */
@@ -64,6 +83,11 @@ export function highlightsFor(places: GenePlace[]): string[] {
   return places.map((p) =>
     JSON.stringify({ refName: p.contig, start: p.start - 1, end: p.end, assemblyName: p.assembly, label: p.name || p.gene }),
   );
+}
+
+/** How JBrowse shows the picks: their regions as one location, and a highlight per gene. */
+export function picksView(places: GenePlace[], contigLengths: Record<string, number>): { loc: string; highlight: string[] } {
+  return { loc: lociText(groupRegions(places, contigLengths)), highlight: highlightsFor(places) };
 }
 
 /** The page's line naming picked genes that the genome version does not hold. */

@@ -192,24 +192,30 @@ export async function placeGenesEverywhere(
   return found;
 }
 
-/** Genes in browsable Bloom genome versions whose ID or name contains `text`; only in `builds`
- * when given. */
+/** Genes in browsable Bloom genome versions whose ID or name contains `text`: up to `limit`
+ * from each of `builds`, by gene ID. */
 export async function searchGenes(
   supabase: Client,
   text: string,
   limit: number,
-  builds: number[] | null = null,
+  builds: number[],
 ): Promise<GenePlace[]> {
   const term = text.trim();
   if (term.length < 2 || FILTER_SYNTAX.test(term)) return [];
-  let query = supabase
-    .from("genome_browser_genes")
-    .select(`${GENE_COLUMNS}, ${WHERE_COLUMNS}`)
-    .or(`gene_id.ilike.*${term}*,gene_name.ilike.*${term}*`)
-    .eq("genome_browser_builds.status", "ready")
-    .eq("genome_browser_builds.genome_reference_versions.status", "ready");
-  if (builds) query = query.in("browser_build_id", builds);
-  const { data, error } = await query.limit(limit);
-  if (error) throw new Error(`searching genes: ${error.message}`);
-  return whereRows(data);
+  const each = await Promise.all(
+    builds.map(async (build) => {
+      const { data, error } = await supabase
+        .from("genome_browser_genes")
+        .select(`${GENE_COLUMNS}, ${WHERE_COLUMNS}`)
+        .or(`gene_id.ilike.*${term}*,gene_name.ilike.*${term}*`)
+        .eq("browser_build_id", build)
+        .eq("genome_browser_builds.status", "ready")
+        .eq("genome_browser_builds.genome_reference_versions.status", "ready")
+        .order("gene_id")
+        .limit(limit);
+      if (error) throw new Error(`searching genes: ${error.message}`);
+      return whereRows(data);
+    }),
+  );
+  return each.flat();
 }

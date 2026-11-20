@@ -27,9 +27,8 @@ const place = (gene: string, assembly: string): GenePlace => ({
   end: 200,
 });
 
-function renderSearch(openGenomes: string[] = []) {
+function renderSearch(openGenomes: string[] = [], onOpenTogether = vi.fn(async () => {})) {
   const onGoTo = vi.fn();
-  const onOpenTogether = vi.fn();
   render(
     <GenomeGeneSearch bloomBuilds={builds} openGenomes={openGenomes} onGoTo={onGoTo} onOpenTogether={onOpenTogether} />,
   );
@@ -38,6 +37,7 @@ function renderSearch(openGenomes: string[] = []) {
 
 const type = (text: string) => fireEvent.change(screen.getByRole("searchbox"), { target: { value: text } });
 const lastScope = () => searchGenes.mock.calls.at(-1)?.[3];
+const lastLimit = () => searchGenes.mock.calls.at(-1)?.[2];
 
 beforeEach(() => {
   searchGenes.mockReset();
@@ -46,19 +46,40 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("GenomeGeneSearch", () => {
-  it("searches every Bloom genome when none is open, up to 100 matches", async () => {
+  it("searches every Bloom genome when none is open, 100 matches shared between them", async () => {
     renderSearch();
     type("AT1G0101");
-    await waitFor(() => expect(searchGenes).toHaveBeenCalled());
-    expect(searchGenes.mock.calls[0][2]).toBe(100);
-    expect(lastScope()).toBeNull();
+    await waitFor(() => expect(lastScope()).toEqual([4, 7]));
+    expect(lastLimit()).toBe(50);
   });
 
-  it("searches the genomes open in the browser", async () => {
+  it("searches the genomes open in the browser, naming them", async () => {
     renderSearch(["b.v2", "Athaliana.Col-0.HPIv02"]);
     type("AT1G0101");
     await waitFor(() => expect(lastScope()).toEqual([7]));
-    expect(screen.getByText(/Searching b\.v2/)).toBeTruthy();
+    expect(lastLimit()).toBe(100);
+    expect(screen.getByText("Searching b v2.")).toBeTruthy();
+  });
+
+  it("says which genomes had no match", async () => {
+    searchGenes.mockResolvedValue([]);
+    renderSearch(["b.v2"]);
+    type("NOPE");
+    expect(await screen.findByText("No gene in b v2 matches.")).toBeTruthy();
+  });
+
+  it("says no Bloom genome matches when all were searched", async () => {
+    searchGenes.mockResolvedValue([]);
+    renderSearch();
+    type("NOPE");
+    expect(await screen.findByText("No gene in Bloom's genomes matches.")).toBeTruthy();
+  });
+
+  it("says when a genome's matches were cut at its share", async () => {
+    searchGenes.mockResolvedValue(Array.from({ length: 50 }, (_, i) => place(`G${i}`, "a.v1")));
+    renderSearch();
+    type("Gx");
+    expect(await screen.findByText("Showing the first 50 per genome; type more to narrow it down.")).toBeTruthy();
   });
 
   it("lists matches under their genome version", async () => {
@@ -84,7 +105,22 @@ describe("GenomeGeneSearch", () => {
     expect(screen.getByText(/Picking from a v1/)).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Pick AT1G01020 in a v1"));
     fireEvent.click(screen.getByRole("button", { name: "Open together" }));
-    expect(onOpenTogether).toHaveBeenCalledWith("a.v1", ["AT1G01010", "AT1G01020"]);
+    expect(onOpenTogether).toHaveBeenCalledWith("a.v1", [place("AT1G01010", "a.v1"), place("AT1G01020", "a.v1")]);
+  });
+
+  it("shows the picks opening, and cannot open them twice meanwhile", async () => {
+    let finish = () => {};
+    const onOpenTogether = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    renderSearch([], onOpenTogether);
+    type("AT1G0101");
+    fireEvent.click((await screen.findAllByRole("checkbox"))[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Open together" }));
+    const opening = screen.getByRole("button", { name: "Opening…" }) as HTMLButtonElement;
+    expect(opening.disabled).toBe(true);
+    fireEvent.click(opening);
+    expect(onOpenTogether).toHaveBeenCalledTimes(1);
+    finish();
+    expect(await screen.findByRole("button", { name: "Open together" })).toBeTruthy();
   });
 
   it("does not offer another genome's genes once one is picked", async () => {
@@ -101,13 +137,12 @@ describe("GenomeGeneSearch", () => {
     fireEvent.click((await screen.findAllByRole("checkbox"))[0]);
     await waitFor(() => expect(lastScope()).toEqual([4]));
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
-    await waitFor(() => expect(lastScope()).toBeNull());
+    await waitFor(() => expect(lastScope()).toEqual([4, 7]));
   });
 
   it("stops picking at 20 genes", async () => {
     searchGenes.mockResolvedValue(Array.from({ length: 21 }, (_, i) => place(`G${i}`, "a.v1")));
     renderSearch();
-    type("G");
     type("Gx");
     const boxes = await screen.findAllByRole("checkbox");
     for (const box of boxes.slice(0, 20)) fireEvent.click(box);

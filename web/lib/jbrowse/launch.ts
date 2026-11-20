@@ -1,5 +1,6 @@
 import { geneTrackId, type LoadedBrowserConfig } from "./bloom-genomes";
 import { densityTrackId } from "./gene-density";
+import type { GenePlace } from "./gene-links";
 import type { PicksPlan } from "./several-genes";
 
 /** Where a link asks the browser to open: an assembly, and a location (a region, or a gene on
@@ -7,8 +8,6 @@ import type { PicksPlan } from "./several-genes";
 export interface LaunchTarget {
   assembly: string;
   loc?: string;
-  /** JBrowse highlights, one per picked gene. */
-  highlight?: string[];
 }
 
 /** What to open: the target, with the gene track shown for a Bloom genome version. */
@@ -32,15 +31,16 @@ export function launchPlan(
   loaded: Pick<LoadedBrowserConfig, "config" | "bloomGenomes">,
 ): LaunchPlan | null {
   if (!target || !loaded.config.assemblies.some((a) => a.name === target.assembly)) return null;
-  const tracks = loaded.bloomGenomes.includes(target.assembly)
-    ? [geneTrackId(target.assembly), densityTrackId(target.assembly)]
-    : [];
+  const tracks = loaded.bloomGenomes.includes(target.assembly) ? bloomTracks(target.assembly) : [];
   return { ...target, tracks };
 }
 
-/** The target opened on several picked genes: their regions, or the whole genome when none
- * could be placed, with each gene highlighted. */
-export function withPicks(target: LaunchTarget | null, picks: PicksPlan | null): LaunchTarget | null {
-  if (!target || !picks) return target;
-  return { assembly: target.assembly, loc: picks.loc ?? undefined, highlight: picks.highlight };
+/** The tracks shown with a Bloom genome version: its genes and gene density. */
+export function bloomTracks(assembly: string): string[] {
+  return [geneTrackId(assembly), densityTrackId(assembly)];
+}
+
+/** The picks to open instead of the link's location: those placed on the launched genome. */
+export function picksToOpen(plan: LaunchPlan | null, picks: PicksPlan | null): GenePlace[] | null {
+  return plan && picks?.assembly === plan.assembly && picks.places.length ? picks.places : null;
 }

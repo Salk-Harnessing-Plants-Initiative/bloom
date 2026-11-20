@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/supabase/server", () => ({
   createServerSupabaseClient: vi.fn(async () => ({})),
@@ -29,6 +29,9 @@ beforeEach(() => {
   mockedReady.mockResolvedValue(true);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("GET /app/jbrowse/density/[buildId]", () => {
   it("answers the build's gene density as plain-text bedGraph, cacheable privately", async () => {
@@ -50,11 +53,33 @@ describe("GET /app/jbrowse/density/[buildId]", () => {
     expect((await call("4")).status).toBe(401);
   });
 
-  it("stops answering from memory once the build is withdrawn", async () => {
+  it("stops answering from memory once the build is withdrawn, forgetting it", async () => {
     mockedRead.mockResolvedValue({ status: "ok", genes: [{ contig: "Chr1", start: 5 }] });
     await call("4");
     mockedReady.mockResolvedValue(false);
     expect((await call("4")).status).toBe(404);
+    mockedReady.mockResolvedValue(true);
+    await call("4");
+    expect(mockedRead).toHaveBeenCalledTimes(2);
+  });
+
+  it("answers 502 and logs when a kept build's state cannot be checked", async () => {
+    mockedRead.mockResolvedValue({ status: "ok", genes: [{ contig: "Chr1", start: 5 }] });
+    await call("4");
+    mockedReady.mockRejectedValue(new Error("down"));
+    expect((await call("4")).status).toBe(502);
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  it("keeps the 50 builds read most lately, dropping the oldest", async () => {
+    mockedRead.mockResolvedValue({ status: "ok", genes: [{ contig: "Chr1", start: 5 }] });
+    for (let id = 1; id <= 51; id++) await call(String(id));
+    expect(mockedRead).toHaveBeenCalledTimes(51);
+    await call("51");
+    await call("2");
+    expect(mockedRead).toHaveBeenCalledTimes(51);
+    await call("1");
+    expect(mockedRead).toHaveBeenCalledTimes(52);
   });
 
   it("answers 401 without a login, reading nothing", async () => {

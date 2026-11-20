@@ -67,6 +67,7 @@ export default defineConfig({
       "components/**/*.test.{ts,tsx}",
       "app/**/*.test.{ts,tsx}",
       "instrumentation.test.ts",
+      "middleware.test.ts",
     ],
     exclude: [
       "node_modules",

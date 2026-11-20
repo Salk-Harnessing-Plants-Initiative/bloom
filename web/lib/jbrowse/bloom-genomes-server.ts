@@ -17,15 +17,7 @@ import {
 import { browserConfig } from "./config";
 import type { GeneStart } from "./gene-density";
 import { browserLink, isRegion, placeGenes, type GenePlace } from "./gene-links";
-import {
-  groupRegions,
-  highlightsFor,
-  lociText,
-  missingNote,
-  readPicks,
-  tooManyNote,
-  type PicksPlan,
-} from "./several-genes";
+import { missingNote, readPicks, tooManyNote, type PicksPlan } from "./several-genes";
 
 /** How long a signed build-file URL works, in seconds. */
 export const SIGNED_URL_TTL_S = 3600;
@@ -189,15 +181,11 @@ export async function placePicks(
   const buildId = loaded.bloomBuilds[link];
   const { genes, tooMany } = readPicks(param);
   if (buildId === undefined || (genes.length === 0 && tooMany === null)) return null;
-  if (tooMany !== null) return { loc: null, highlight: [], notes: [tooManyNote(tooMany)] };
+  if (tooMany !== null) return { assembly: link, places: [], notes: [tooManyNote(tooMany)] };
   const found = await placeGenes(supabase, { buildId, assembly: link, label: link }, genes);
   const places = genes.map((g) => found.get(g)).filter((p): p is GenePlace => p !== undefined);
   const missing = genes.filter((g) => !found.has(g));
-  return {
-    loc: places.length ? lociText(groupRegions(places)) : null,
-    highlight: highlightsFor(places),
-    notes: missing.length ? [missingNote(missing, link)] : [],
-  };
+  return { assembly: link, places, notes: missing.length ? [missingNote(missing, link)] : [] };
 }
 
 /** Genes read per request when reading a whole build. */
@@ -221,8 +209,13 @@ export async function readBuildGeneStarts(supabase: Client, buildId: number): Pr
   if (error) return { status: "failed", reason: `reading build ${buildId}: ${error.message}` };
   if (!build) return { status: "not found" };
 
+  const expected = (build as { gene_count: number | null }).gene_count;
+  if (expected === null) return { status: "failed", reason: `build ${buildId} records no gene count` };
+
+  // Read from where the last page ended, so a server row limit below GENE_PAGE skips nothing.
   const genes: GeneStart[] = [];
-  for (let from = 0; ; from += GENE_PAGE) {
+  while (genes.length < expected) {
+    const from = genes.length;
     const { data, error: pageError } = await supabase
       .from("genome_browser_genes")
       .select("contig, gene_start")
@@ -231,11 +224,10 @@ export async function readBuildGeneStarts(supabase: Client, buildId: number): Pr
       .range(from, from + GENE_PAGE - 1);
     if (pageError) return { status: "failed", reason: `reading build ${buildId}'s genes: ${pageError.message}` };
     const rows = (data ?? []) as { contig: string; gene_start: number }[];
+    if (rows.length === 0) break;
     genes.push(...rows.map((r) => ({ contig: r.contig, start: r.gene_start })));
-    if (rows.length < GENE_PAGE) break;
   }
-  const expected = (build as { gene_count: number | null }).gene_count;
-  if (expected !== null && genes.length !== expected) {
+  if (genes.length !== expected) {
     return { status: "failed", reason: `read ${genes.length} of build ${buildId}'s ${expected} genes` };
   }
   return { status: "ok", genes };

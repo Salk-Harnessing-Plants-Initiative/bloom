@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { browserConfig } from "./config";
-import { launchPlan, launchTarget, withPicks } from "./launch";
+import type { GenePlace } from "./gene-links";
+import { bloomTracks, launchPlan, launchTarget, picksToOpen } from "./launch";
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -92,27 +93,25 @@ describe("browserConfig", () => {
   });
 });
 
-describe("withPicks", () => {
-  const target = { assembly: "at.col0.v2", loc: undefined };
+describe("bloomTracks", () => {
+  it("is a Bloom genome version's genes and gene density", () => {
+    expect(bloomTracks("at.col0.v2")).toEqual(["at.col0.v2-genes", "at.col0.v2-gene-density"]);
+  });
+});
 
-  it("opens the picks' regions with their highlights", () => {
-    expect(withPicks(target, { loc: "Chr1:1..9 Chr3:5..7", highlight: ["h"], notes: [] })).toEqual({
-      assembly: "at.col0.v2",
-      loc: "Chr1:1..9 Chr3:5..7",
-      highlight: ["h"],
-    });
+describe("picksToOpen", () => {
+  const plan = { assembly: "at.col0.v2", tracks: [] };
+  const gene = { gene: "A", name: null, assembly: "at.col0.v2", label: "at.col0 v2", contig: "Chr1", start: 1, end: 9 };
+  const picks = (places: GenePlace[], assembly = "at.col0.v2") => ({ assembly, places, notes: [] });
+
+  it("opens the placed picks on the launched genome", () => {
+    expect(picksToOpen(plan, picks([gene]))).toEqual([gene]);
   });
 
-  it("opens the whole genome when no pick could be placed", () => {
-    expect(withPicks(target, { loc: null, highlight: [], notes: ["x"] })).toEqual({
-      assembly: "at.col0.v2",
-      loc: undefined,
-      highlight: [],
-    });
-  });
-
-  it("leaves the target as it is without picks", () => {
-    expect(withPicks(target, null)).toBe(target);
-    expect(withPicks(null, { loc: "Chr1:1..9", highlight: [], notes: [] })).toBeNull();
+  it("opens the link's location when no pick was placed, or the picks are another genome's", () => {
+    expect(picksToOpen(plan, picks([]))).toBeNull();
+    expect(picksToOpen(plan, picks([gene], "other.v1"))).toBeNull();
+    expect(picksToOpen(plan, null)).toBeNull();
+    expect(picksToOpen(null, picks([gene]))).toBeNull();
   });
 });

@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { GenePlace } from "./gene-links";
 import {
   MAX_PICKS,
+  MIN_REGION_SHARE,
   groupRegions,
   highlightsFor,
   lociText,
   missingNote,
   picksLink,
+  picksView,
   readPicks,
   tooManyNote,
 } from "./several-genes";
@@ -63,7 +65,7 @@ describe("groupRegions", () => {
   });
 
   it("keeps genes further apart than 1 Mb as separate regions", () => {
-    const regions = groupRegions([at("A", "Chr1", 1_000_001, 1_001_000), at("B", "Chr1", 2_001_002, 2_002_000)]);
+    const regions = groupRegions([at("A", "Chr1", 1_000_001, 1_001_000), at("B", "Chr1", 2_001_001, 2_002_000)]);
     expect(regions.map((r) => r.genes)).toEqual([["A"], ["B"]]);
   });
 
@@ -89,6 +91,34 @@ describe("groupRegions", () => {
 
   it("gives nothing for no genes", () => {
     expect(groupRegions([])).toEqual([]);
+  });
+
+  it("never pads past the contig's end when its length is known", () => {
+    expect(groupRegions([at("A", "Chr1", 990_001, 999_900)], { Chr1: 1_000_000 })[0].end).toBe(1_000_000);
+    expect(groupRegions([at("A", "Chr1", 990_001, 999_900)])[0].end).toBe(1_000_890);
+  });
+
+  it("merges regions whose padding makes them touch", () => {
+    // 1,000,001 bp apart, so not joined; each padded by 500,000 bp, so they meet.
+    const regions = groupRegions([at("A", "Chr1", 1_000_001, 6_000_000), at("B", "Chr1", 7_000_001, 12_000_000)]);
+    expect(regions).toEqual([{ contig: "Chr1", start: 500_001, end: 12_500_000, genes: ["A", "B"] }]);
+  });
+
+  it("widens a small region to a share of the whole, so it is not lost beside a large one", () => {
+    const regions = groupRegions([at("A", "Chr1", 1_000_001, 6_000_000), at("B", "Chr3", 1_000_001, 1_001_000)]);
+    const total = 6_000_000 + 1_200;
+    expect(regions[1]).toEqual({ contig: "Chr3", start: 940_489, end: 1_060_512, genes: ["B"] });
+    expect(regions[1].end - regions[1].start + 1).toBe(Math.ceil(total * MIN_REGION_SHARE));
+  });
+});
+
+describe("picksView", () => {
+  it("gives the regions as one location and a highlight per gene", () => {
+    const places = [at("A", "Chr1", 100_001, 102_000), at("B", "Chr1", 300_001, 301_000)];
+    expect(picksView(places, { Chr1: 310_000 })).toEqual({
+      loc: "Chr1:79901..310000",
+      highlight: highlightsFor(places),
+    });
   });
 });
 

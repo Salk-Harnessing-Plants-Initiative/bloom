@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { parseGenomeVersion } from "@/lib/jbrowse/bloom-genomes";
 import { groupByGenome, searchScope } from "@/lib/jbrowse/browser-session";
 import { searchGenes, type GenePlace } from "@/lib/jbrowse/gene-links";
 import { MAX_PICKS } from "@/lib/jbrowse/several-genes";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
 
-/** Most matches listed at once. */
+/** Most matches listed at once, shared between the genomes searched. */
 const MAX_MATCHES = 100;
 /** Pause after typing before searching, in ms. */
 const TYPING_PAUSE_MS = 300;
@@ -20,8 +21,14 @@ interface Props {
   /** Moves the browser to one gene. */
   onGoTo: (place: GenePlace) => void;
   /** Opens several genes of one genome together. */
-  onOpenTogether: (assembly: string, genes: string[]) => void;
+  onOpenTogether: (assembly: string, genes: GenePlace[]) => Promise<void>;
 }
+
+/** A Bloom genome version as people read it, e.g. "tair10 v1". */
+const genomeLabel = (assembly: string) => {
+  const v = parseGenomeVersion(assembly);
+  return v ? `${v.genome} v${v.version}` : assembly;
+};
 
 const same = (a: GenePlace, b: GenePlace) => a.assembly === b.assembly && a.gene === b.gene;
 
@@ -32,14 +39,21 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
   const [matches, setMatches] = useState<GenePlace[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [picks, setPicks] = useState<GenePlace[]>([]);
+  const [opening, setOpening] = useState(false);
 
   const picked = picks[0] ?? null;
   const scope = useMemo(
     () => searchScope(openGenomes, picked?.assembly ?? null, bloomBuilds),
     [openGenomes, picked?.assembly, bloomBuilds],
   );
-  const scopeKey = scope?.join(",") ?? "all";
-  const searchedGenomes = openGenomes.filter((a) => bloomBuilds[a] !== undefined);
+  const scopeKey = scope.join(",");
+  const perGenome = Math.ceil(MAX_MATCHES / Math.max(1, scope.length));
+  const searchedGenomes = openGenomes.filter((a) => bloomBuilds[a] !== undefined).map(genomeLabel);
+  const searchedText = picked
+    ? picked.label
+    : searchedGenomes.length
+      ? searchedGenomes.join(", ")
+      : "Bloom's genomes";
 
   useEffect(() => {
     const term = text.trim();
@@ -49,7 +63,8 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
     }
     let live = true;
     const timer = setTimeout(() => {
-      searchGenes(createClientSupabaseClient(), term, MAX_MATCHES, scope)
+      setFailed(false);
+      searchGenes(createClientSupabaseClient(), term, perGenome, scope)
         .then((found) => {
           if (!live) return;
           setFailed(false);
@@ -72,6 +87,11 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
   const toggle = (p: GenePlace) => setPicks((now) => (now.some((q) => same(p, q)) ? now.filter((q) => !same(p, q)) : [...now, p]));
   const full = picks.length >= MAX_PICKS;
   const shown = (matches ?? []).filter((m) => !picked || m.assembly === picked.assembly);
+  const groups = groupByGenome(shown);
+  const openTogether = () => {
+    setOpening(true);
+    onOpenTogether(picks[0].assembly, picks).finally(() => setOpening(false));
+  };
 
   return (
     <div className="px-4 text-sm">
@@ -86,7 +106,7 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
       {picked ? (
         <p className="mt-1 text-stone-500">Picking from {picked.label}; genes are picked from one genome at a time.</p>
       ) : (
-        searchedGenomes.length > 0 && <p className="mt-1 text-stone-500">Searching {searchedGenomes.join(", ")}.</p>
+        searchedGenomes.length > 0 && <p className="mt-1 text-stone-500">Searching {searchedText}.</p>
       )}
       {picks.length > 0 && (
         <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -95,10 +115,11 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
           </span>
           <button
             type="button"
-            onClick={() => onOpenTogether(picks[0].assembly, picks.map((p) => p.gene))}
-            className="rounded bg-lime-700 px-2 py-0.5 text-white hover:bg-lime-800"
+            onClick={openTogether}
+            disabled={opening}
+            className="rounded bg-lime-700 px-2 py-0.5 text-white hover:bg-lime-800 disabled:opacity-60"
           >
-            Open together
+            {opening ? "Opening…" : "Open together"}
           </button>
           <button type="button" onClick={() => setPicks([])} className="text-lime-700 hover:underline">
             Clear
@@ -109,8 +130,8 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
       {failed && <p className="mt-1 text-red-700">Genes could not be searched.</p>}
       {matches && !failed && (
         <div className="mt-1 max-h-72 overflow-y-auto">
-          {shown.length === 0 && <p className="text-stone-500">No gene in Bloom&apos;s genomes matches.</p>}
-          {groupByGenome(shown).map((group) => (
+          {shown.length === 0 && <p className="text-stone-500">No gene in {searchedText} matches.</p>}
+          {groups.map((group) => (
             <div key={group.assembly}>
               <p className="mt-1 font-medium text-stone-700">{group.label}</p>
               <ul>
@@ -135,8 +156,8 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
               </ul>
             </div>
           ))}
-          {matches.length === MAX_MATCHES && (
-            <p className="text-stone-500">Showing the first {MAX_MATCHES}; type more to narrow it down.</p>
+          {groups.some((g) => g.places.length >= perGenome) && (
+            <p className="text-stone-500">Showing the first {perGenome} per genome; type more to narrow it down.</p>
           )}
         </div>
       )}
