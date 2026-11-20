@@ -6,6 +6,7 @@ import {
   SIGNABLE_BUILD_SELECT,
   REDIRECT_MAX_AGE_S,
   SIGNED_URL_TTL_S,
+  geneLinkRedirect,
   loadBrowserConfig,
   signBuildFile,
   whyNotOffered,
@@ -42,7 +43,7 @@ function query(result: { data: unknown; error: unknown }) {
     calls,
     then: (resolve: (r: unknown) => unknown) => Promise.resolve(result).then(resolve),
   };
-  for (const method of ["select", "eq", "maybeSingle"]) {
+  for (const method of ["select", "eq", "in", "maybeSingle"]) {
     builder[method] = (...args: unknown[]) => {
       calls.push([method, ...args]);
       return builder;
@@ -90,6 +91,7 @@ describe("loadBrowserConfig", () => {
     expect(await loadBrowserConfig(supabase)).toEqual({
       config: browserConfig(),
       bloomGenomes: [],
+      bloomBuilds: {},
       error: null,
     });
     expect(raw.storage.from).not.toHaveBeenCalled();
@@ -106,6 +108,7 @@ describe("loadBrowserConfig", () => {
 
     expect(loaded.error).toBeNull();
     expect(loaded.bloomGenomes).toEqual(["at.col0.v2", "at.col0.v10", "zm.b73.v1"]);
+    expect(loaded.bloomBuilds).toEqual({ "at.col0.v2": 4, "at.col0.v10": 5, "zm.b73.v1": 3 });
     expect(raw.storage.from).not.toHaveBeenCalled();
     const assembly = loaded.config.assemblies.find((a) => a.name === "at.col0.v2") as unknown as {
       displayName: string;
@@ -132,6 +135,7 @@ describe("loadBrowserConfig", () => {
     expect(loaded).toEqual({
       config: browserConfig(),
       bloomGenomes: [],
+      bloomBuilds: {},
       error: "Bloom's own genomes could not be read.",
     });
     expect(console.error).toHaveBeenCalledWith(
@@ -230,5 +234,35 @@ describe("signBuildFile", () => {
   ])("fails with a reason when %s", async (_case, setup, reason) => {
     const { supabase } = client(setup as never);
     await expect(signBuildFile(supabase, 4, "fasta")).resolves.toEqual({ status: "failed", reason });
+  });
+});
+
+describe("geneLinkRedirect", () => {
+  const loaded = { bloomBuilds: { "at.col0.v2": 4 } };
+  const gene = { gene_id: "AT1G01010", gene_name: "NAC001", contig: "Chr1", gene_start: 3631, gene_end: 5899 };
+
+  it("sends a gene link to the gene's span in that build", async () => {
+    const { supabase, table } = client({ rows: { data: [gene], error: null } });
+    await expect(geneLinkRedirect(supabase, loaded, "at.col0.v2", "AT1G01010")).resolves.toBe(
+      "/app/jbrowse?genome=at.col0.v2&loc=Chr1%3A3631..5899",
+    );
+    expect(table.calls).toContainEqual(["eq", "browser_build_id", 4]);
+  });
+
+  it("opens the whole genome, naming the gene, when the build does not have it", async () => {
+    const { supabase } = client({ rows: { data: [], error: null } });
+    await expect(geneLinkRedirect(supabase, loaded, "at.col0.v2", "NOPE1")).resolves.toBe(
+      "/app/jbrowse?genome=at.col0.v2&missing=NOPE1",
+    );
+  });
+
+  it.each([
+    ["a region", "at.col0.v2", "Chr1:1..9"],
+    ["no location", "at.col0.v2", ""],
+    ["an outside assembly, which has its own gene index", "Athaliana.Col-0.HPIv02", "AT1G01010"],
+  ])("needs no lookup for %s", async (_case, link, loc) => {
+    const { supabase, raw } = client();
+    await expect(geneLinkRedirect(supabase, loaded, link, loc)).resolves.toBeNull();
+    expect(raw.from).not.toHaveBeenCalled();
   });
 });

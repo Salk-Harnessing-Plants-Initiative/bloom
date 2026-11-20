@@ -5,6 +5,7 @@ import {
   getUser,
 } from "@/lib/supabase/server";
 import { createClientSupabaseClient } from "@/lib/supabase/client";
+import { BloomGenomeLinks, useGenesEverywhere } from "@/components/gene-links";
 
 
 import "./styles.css";
@@ -800,6 +801,9 @@ export default function Genes() {
   // });
 
   const [geneCandidates, setGeneCandidates] = useState<GeneRow[] | null>(null);
+  const bloomPlaces = useGenesEverywhere(
+    (geneCandidates ?? []).flatMap((row) => [row.gene, row.genes?.short_id ?? ""]),
+  );
   const [selectedStatus, setSelectedStatus] = useState<Status | null>(null);
   const [modal_box, setModalBox] = useState(false);
   const [candidate_modal, setCandidateModal] = useState(false);
@@ -1134,6 +1138,10 @@ export default function Genes() {
                     ) : (
                       row.genes?.short_id || row.gene
                     )}
+                    <BloomGenomeLinks
+                      gene={row.genes?.short_id || row.gene}
+                      places={bloomPlaces.get(row.genes?.short_id ?? "") ?? bloomPlaces.get(row.gene) ?? []}
+                    />
                   </td>
                   <td className="text-left p-2">{row.genes?.symbol || null}</td>
                   <td className="text-left p-2">{row.genes?.standard_name || null}</td>
