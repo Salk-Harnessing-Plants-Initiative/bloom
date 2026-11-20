@@ -1,6 +1,8 @@
+import { stringToJexlExpression } from "@jbrowse/core/util/jexlStrings";
 import { describe, expect, it } from "vitest";
 
 import {
+  ORTHOLOGS_DETAIL,
   BUILD_ROLES,
   assemblyName,
   bloomGenomeConfig,
@@ -183,5 +185,31 @@ describe("bloomGenomesNote", () => {
     expect(bloomGenomesNote(0, "Bloom's own genomes could not be read.")).toBe(
       "Bloom's own genomes could not be read. The reference genomes below still work.",
     );
+  });
+});
+
+
+describe("the orthologs link in a gene's details", () => {
+  // Evaluated the way JBrowse evaluates formatDetails.
+  const evaluate = (feature: Record<string, unknown>) =>
+    stringToJexlExpression(ORTHOLOGS_DETAIL).eval({ feature }) as { Orthologs?: string };
+
+  it("links a plain gene ID as it is", () => {
+    expect(evaluate({ gene_id: "AT1G01010" }).Orthologs).toBe(
+      '<a href="/app/orthofinder?search=AT1G01010">Find orthologs</a>',
+    );
+  });
+
+  it("escapes an ID that could leave the link or its query value", () => {
+    const id = `a"b' c<img src=x>&d#e?f+g%h`;
+    const html = evaluate({ gene_id: id }).Orthologs ?? "";
+    const href = /^<a href="([^"]*)">Find orthologs<\/a>$/.exec(html)?.[1];
+    expect(href).toBeDefined();
+    expect(new URL(href!, "https://bloom.example").searchParams.get("search")).toBe(id);
+    expect(html).not.toContain("<img");
+  });
+
+  it("offers no link for a feature without a gene ID", () => {
+    expect(evaluate({})).toEqual({});
   });
 });

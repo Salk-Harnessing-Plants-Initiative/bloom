@@ -29,10 +29,22 @@ export type BuildRole = (typeof BUILD_ROLES)[number];
 /** Largest version number a link can name (the column is a Postgres integer). */
 const MAX_VERSION = 2_147_483_647;
 
+/** Characters escaped in the gene ID before it goes into the link, `%` first; enough that no ID
+ * can leave the link's quotes or its query value. JBrowse's jexl has no encodeURIComponent. */
+const LINK_ESCAPES: [string, string][] = [
+  ["%", "%25"], ["&", "%26"], ["#", "%23"], ["?", "%3F"], ["+", "%2B"], [" ", "%20"],
+  ['"', "%22"], ["'", "%27"], ["<", "%3C"], [">", "%3E"],
+];
+
+const escapedGeneId = LINK_ESCAPES.reduce(
+  (expr, [from, to]) => `replaceAll(${expr}, ${JSON.stringify(from)}, ${JSON.stringify(to)})`,
+  "feature.gene_id",
+);
+
 /** A gene's details in the browser gain a link to its orthologs on Bloom's OrthoFinder page.
  * JBrowse evaluates it on a plain copy of the feature, so fields are read directly, not via get(). */
 export const ORTHOLOGS_DETAIL =
-  "jexl:feature.gene_id ? {Orthologs: '<a href=\"/app/orthofinder?search=' + feature.gene_id + '\">Find orthologs</a>'} : {}";
+  `jexl:feature.gene_id ? {Orthologs: '<a href="/app/orthofinder?search=' + ${escapedGeneId} + '">Find orthologs</a>'} : {}`;
 
 /** The stable Bloom address of one build file; it redirects to a freshly signed storage URL. */
 export function buildFileUri(buildId: number, role: BuildRole): string {
