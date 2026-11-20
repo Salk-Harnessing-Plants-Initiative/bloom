@@ -1,10 +1,13 @@
 import { geneTrackId, type LoadedBrowserConfig } from "./bloom-genomes";
+import type { PicksPlan } from "./several-genes";
 
 /** Where a link asks the browser to open: an assembly, and a location (a region, or a gene on
  * the outside assemblies, which have a gene index); no location shows the whole assembly. */
 export interface LaunchTarget {
   assembly: string;
   loc?: string;
+  /** JBrowse highlights, one per picked gene. */
+  highlight?: string[];
 }
 
 /** What to open: the target, with the gene track shown for a Bloom genome version. */
@@ -30,4 +33,11 @@ export function launchPlan(
   if (!target || !loaded.config.assemblies.some((a) => a.name === target.assembly)) return null;
   const tracks = loaded.bloomGenomes.includes(target.assembly) ? [geneTrackId(target.assembly)] : [];
   return { ...target, tracks };
+}
+
+/** The target opened on several picked genes: their regions, or the whole genome when none
+ * could be placed, with each gene highlighted. */
+export function withPicks(target: LaunchTarget | null, picks: PicksPlan | null): LaunchTarget | null {
+  if (!target || !picks) return target;
+  return { assembly: target.assembly, loc: picks.loc ?? undefined, highlight: picks.highlight };
 }

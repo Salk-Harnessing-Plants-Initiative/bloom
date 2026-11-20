@@ -8,6 +8,7 @@ import {
   SIGNED_URL_TTL_S,
   geneLinkRedirect,
   loadBrowserConfig,
+  placePicks,
   signBuildFile,
   whyNotOffered,
 } from "./bloom-genomes-server";
@@ -266,3 +267,57 @@ describe("geneLinkRedirect", () => {
     expect(raw.from).not.toHaveBeenCalled();
   });
 });
+
+describe("placePicks", () => {
+  const loaded = { bloomBuilds: { "at.col0.v2": 4 } };
+  const row = (gene_id: string, gene_start: number, gene_end: number, contig = "Chr1") => ({
+    gene_id,
+    gene_name: null,
+    contig,
+    gene_start,
+    gene_end,
+  });
+
+  it("needs nothing without picks, or for a genome that is not offered", async () => {
+    const { supabase, raw } = client();
+    await expect(placePicks(supabase, loaded, "at.col0.v2", "")).resolves.toBeNull();
+    await expect(placePicks(supabase, loaded, "other.v1", "AT1G01010")).resolves.toBeNull();
+    expect(raw.from).not.toHaveBeenCalled();
+  });
+
+  it("opens the picks' regions with each gene highlighted, from that build's genes", async () => {
+    const { supabase, table } = client({
+      rows: { data: [row("A", 100_001, 102_000), row("B", 300_001, 301_000), row("C", 10_001, 11_000, "Chr3")], error: null },
+    });
+    const plan = await placePicks(supabase, loaded, "at.col0.v2", "A,B,C");
+    expect(plan?.loc).toBe("Chr1:79901..321100 Chr3:9901..11100");
+    expect(plan?.highlight).toHaveLength(3);
+    expect(plan?.notes).toEqual([]);
+    expect(table.calls).toContainEqual(["eq", "browser_build_id", 4]);
+  });
+
+  it("names the picks the build does not hold and opens the rest", async () => {
+    const { supabase } = client({ rows: { data: [row("A", 1_001, 2_000)], error: null } });
+    const plan = await placePicks(supabase, loaded, "at.col0.v2", "A,NOPE1,NOPE2");
+    expect(plan?.loc).toBe("Chr1:901..2100");
+    expect(plan?.notes).toEqual(["NOPE1, NOPE2 are not among at.col0.v2's genes, so they were left out."]);
+  });
+
+  it("shows the whole genome when no pick is held", async () => {
+    const { supabase } = client({ rows: { data: [], error: null } });
+    const plan = await placePicks(supabase, loaded, "at.col0.v2", "NOPE1");
+    expect(plan).toEqual({ loc: null, highlight: [], notes: ["NOPE1 is not among at.col0.v2's genes, so it was left out."] });
+  });
+
+  it("refuses more genes than the limit without reading any", async () => {
+    const { supabase, raw } = client();
+    const genes = Array.from({ length: 21 }, (_, i) => `G${i}`).join(",");
+    await expect(placePicks(supabase, loaded, "at.col0.v2", genes)).resolves.toEqual({
+      loc: null,
+      highlight: [],
+      notes: ["Open at most 20 genes at once; this link has 21."],
+    });
+    expect(raw.from).not.toHaveBeenCalled();
+  });
+});
+

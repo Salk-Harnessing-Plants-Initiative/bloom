@@ -192,17 +192,24 @@ export async function placeGenesEverywhere(
   return found;
 }
 
-/** Genes in browsable Bloom genome versions whose ID or name contains `text`. */
-export async function searchGenes(supabase: Client, text: string, limit: number): Promise<GenePlace[]> {
+/** Genes in browsable Bloom genome versions whose ID or name contains `text`; only in `builds`
+ * when given. */
+export async function searchGenes(
+  supabase: Client,
+  text: string,
+  limit: number,
+  builds: number[] | null = null,
+): Promise<GenePlace[]> {
   const term = text.trim();
   if (term.length < 2 || FILTER_SYNTAX.test(term)) return [];
-  const { data, error } = await supabase
+  let query = supabase
     .from("genome_browser_genes")
     .select(`${GENE_COLUMNS}, ${WHERE_COLUMNS}`)
     .or(`gene_id.ilike.*${term}*,gene_name.ilike.*${term}*`)
     .eq("genome_browser_builds.status", "ready")
-    .eq("genome_browser_builds.genome_reference_versions.status", "ready")
-    .limit(limit);
+    .eq("genome_browser_builds.genome_reference_versions.status", "ready");
+  if (builds) query = query.in("browser_build_id", builds);
+  const { data, error } = await query.limit(limit);
   if (error) throw new Error(`searching genes: ${error.message}`);
   return whereRows(data);
 }

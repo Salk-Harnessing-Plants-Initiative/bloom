@@ -1,10 +1,12 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import type { LoadedBrowserConfig } from "@/lib/jbrowse/bloom-genomes";
-import { launchPlan, launchTarget } from "@/lib/jbrowse/launch";
+import type { BrowserSession } from "@/lib/jbrowse/browser-session";
+import { launchPlan, launchTarget, withPicks } from "@/lib/jbrowse/launch";
+import type { PicksPlan } from "@/lib/jbrowse/several-genes";
 
 // Lazy load JBrowse only on client side
 let createViewState: any;
@@ -13,11 +15,25 @@ let getEnv: any;
 
 type ViewModel = any;
 
-function JBrowse({ loaded }: { loaded: LoadedBrowserConfig }) {
+export interface JBrowseProps {
+  loaded: LoadedBrowserConfig;
+  picks: PicksPlan | null;
+  /** Given JBrowse's session once it is made. */
+  onSession?: (session: BrowserSession) => void;
+  /** Called whenever the session changes. */
+  onChange?: () => void;
+}
+
+function JBrowse({ loaded, picks, onSession, onChange }: JBrowseProps) {
+  const onSessionRef = useRef(onSession);
+  const onChangeRef = useRef(onChange);
+  onSessionRef.current = onSession;
+  onChangeRef.current = onChange;
   const searchParams = useSearchParams();
-  const plan = launchPlan(launchTarget(searchParams), loaded);
+  const plan = launchPlan(withPicks(launchTarget(searchParams), picks), loaded);
   const reference = plan?.assembly;
   const loc = plan?.loc;
+  const highlight = plan?.highlight?.join("\n") ?? "";
   const tracks = plan?.tracks.join("\n") ?? "";
   const config = loaded.config;
 
@@ -45,9 +61,10 @@ function JBrowse({ loaded }: { loaded: LoadedBrowserConfig }) {
         getEnv = jbrowseCore.getEnv;
         
         setLoadingStatus("Initializing genome browser...");
-        const state = createViewState({ config });
+        const state = createViewState({ config, onChange: () => onChangeRef.current?.() });
         const { pluginManager } = getEnv(state);
         setViewState(state);
+        onSessionRef.current?.(state.session);
         setLaunchError(null);
 
         if (reference) {
@@ -57,6 +74,7 @@ function JBrowse({ loaded }: { loaded: LoadedBrowserConfig }) {
             pluginManager.evaluateAsyncExtensionPoint("LaunchView-LinearGenomeView", {
               tracks: tracks ? tracks.split("\n") : [],
               loc,
+              highlight: highlight ? highlight.split("\n") : undefined,
               assembly: reference,
               session: state.session,
             }),
@@ -91,7 +109,7 @@ function JBrowse({ loaded }: { loaded: LoadedBrowserConfig }) {
     };
 
     loadJBrowse();
-  }, [config, reference, loc, tracks, retryCount]);
+  }, [config, reference, loc, tracks, highlight, retryCount]);
 
   if (error) {
     return (

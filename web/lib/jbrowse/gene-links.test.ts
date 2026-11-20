@@ -199,6 +199,18 @@ describe("placeGeneEverywhere / searchGenes", () => {
     expect(calls[0].ops).toContainEqual(["limit", 25]);
   });
 
+  it("searches only the given browser builds", async () => {
+    const { supabase, calls } = fakeClient([{ data: [], error: null }]);
+    await searchGenes(supabase, "nac0", 100, [4, 7]);
+    expect(calls[0].ops).toContainEqual(["in", "browser_build_id", [4, 7]]);
+  });
+
+  it("searches every build when none is given", async () => {
+    const { supabase, calls } = fakeClient([{ data: [], error: null }]);
+    await searchGenes(supabase, "nac0", 100, null);
+    expect(calls[0].ops.some((op) => op[0] === "in")).toBe(false);
+  });
+
   it.each(["", " ", "a", "x,y", "a(b", "a*b"])("searches nothing for %j", async (text) => {
     const { supabase, calls } = fakeClient([]);
     await expect(searchGenes(supabase, text, 25)).resolves.toEqual([]);

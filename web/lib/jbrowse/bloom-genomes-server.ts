@@ -15,7 +15,16 @@ import {
   type UnavailableReason,
 } from "./bloom-genomes";
 import { browserConfig } from "./config";
-import { browserLink, isRegion, placeGenes } from "./gene-links";
+import { browserLink, isRegion, placeGenes, type GenePlace } from "./gene-links";
+import {
+  groupRegions,
+  highlightsFor,
+  lociText,
+  missingNote,
+  readPicks,
+  tooManyNote,
+  type PicksPlan,
+} from "./several-genes";
 
 /** How long a signed build-file URL works, in seconds. */
 export const SIGNED_URL_TTL_S = 3600;
@@ -167,3 +176,26 @@ export async function geneLinkRedirect(
     ? browserLink(place)
     : `/app/jbrowse?genome=${encodeURIComponent(link)}&missing=${encodeURIComponent(loc)}`;
 }
+
+/** The plan for `?genome=<offered version>&genes=<id>,...`; null without picks or for a genome
+ * Bloom does not offer (the page already says why). */
+export async function placePicks(
+  supabase: Client,
+  loaded: Pick<LoadedBrowserConfig, "bloomBuilds">,
+  link: string,
+  param: string,
+): Promise<PicksPlan | null> {
+  const buildId = loaded.bloomBuilds[link];
+  const { genes, tooMany } = readPicks(param);
+  if (buildId === undefined || (genes.length === 0 && tooMany === null)) return null;
+  if (tooMany !== null) return { loc: null, highlight: [], notes: [tooManyNote(tooMany)] };
+  const found = await placeGenes(supabase, { buildId, assembly: link, label: link }, genes);
+  const places = genes.map((g) => found.get(g)).filter((p): p is GenePlace => p !== undefined);
+  const missing = genes.filter((g) => !found.has(g));
+  return {
+    loc: places.length ? lociText(groupRegions(places)) : null,
+    highlight: highlightsFor(places),
+    notes: missing.length ? [missingNote(missing, link)] : [],
+  };
+}
+

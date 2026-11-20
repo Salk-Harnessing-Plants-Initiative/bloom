@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { browserConfig } from "./config";
-import { launchPlan, launchTarget } from "./launch";
+import { launchPlan, launchTarget, withPicks } from "./launch";
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -89,5 +89,30 @@ describe("browserConfig", () => {
 
   it("has no outside name a Bloom version could take (lowercase, ending .v<N>)", () => {
     expect(names.filter((n) => n === n.toLowerCase() || /\.v[0-9]+$/.test(n))).toEqual([]);
+  });
+});
+
+describe("withPicks", () => {
+  const target = { assembly: "at.col0.v2", loc: undefined };
+
+  it("opens the picks' regions with their highlights", () => {
+    expect(withPicks(target, { loc: "Chr1:1..9 Chr3:5..7", highlight: ["h"], notes: [] })).toEqual({
+      assembly: "at.col0.v2",
+      loc: "Chr1:1..9 Chr3:5..7",
+      highlight: ["h"],
+    });
+  });
+
+  it("opens the whole genome when no pick could be placed", () => {
+    expect(withPicks(target, { loc: null, highlight: [], notes: ["x"] })).toEqual({
+      assembly: "at.col0.v2",
+      loc: undefined,
+      highlight: [],
+    });
+  });
+
+  it("leaves the target as it is without picks", () => {
+    expect(withPicks(target, null)).toBe(target);
+    expect(withPicks(null, { loc: "Chr1:1..9", highlight: [], notes: [] })).toBeNull();
   });
 });
