@@ -80,7 +80,9 @@ class TranslationLine(BaseModel):
     modification: str | None
 
 
-_LOG2FC = "None when infinite: the gene is absent from one group (absent_in_one_group)."
+_LOG2FC = "None when infinite: the gene was found in one group only."
+_ONE_GROUP = "An infinite log2FC: the gene was found in one group only."
+_LIKELY_ONE_GROUP = "|log2FC| above 20: almost certainly found in one group only."
 
 
 class Marker(BaseModel):
@@ -88,9 +90,10 @@ class Marker(BaseModel):
     cell_type: str | None
     label_source: str | None
     log2fc: float | None = Field(description=_LOG2FC)
-    absent_in_one_group: bool
+    found_in_one_group_only: bool = Field(description=_ONE_GROUP)
+    likely_found_in_one_group_only: bool = Field(description=_LIKELY_ONE_GROUP)
     fdr: float
-    pct_in_cluster: float | None = Field(
+    pct_in_cell_type: float | None = Field(
         description="Share of the cluster's cells, 0–1."
     )
     pct_elsewhere: float | None = Field(description="Share of the other cells, 0–1.")
@@ -109,8 +112,9 @@ class GenotypeComparison(BaseModel):
     group2: str | None
     log2fc: float | None = Field(description=_LOG2FC)
     fdr: float
-    direction: str = Field(description="up or down in group1.")
-    absent_in_one_group: bool
+    higher_in: str | None = Field(description="The group the gene is higher in.")
+    found_in_one_group_only: bool = Field(description=_ONE_GROUP)
+    likely_found_in_one_group_only: bool = Field(description=_LIKELY_ONE_GROUP)
 
 
 class DatasetHit(BaseModel):

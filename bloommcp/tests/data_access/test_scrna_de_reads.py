@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from bloom_mcp.data_access import de_choice, gene_reads, scrna_de_reads
+from bloom_mcp.data_access import cluster_panel, de_choice, gene_reads, scrna_de_reads
 
-from .scrna_de_data import reads
+from .scrna_de_data import comparison, reads
 
 
 def _ids(rows):
@@ -78,22 +78,23 @@ def test_no_complete_runs():
 
 
 def test_one_vs_rest_is_tested_only_from_complete_runs_over_most_cells():
-    chosen = scrna_de_reads.one_vs_rest(reads(), [2, 1], ["c4", "c1", "c2"])
+    chosen = de_choice.read_one_vs_rest(reads(), [2, 1], ["c4", "c1", "c2"])
     # c2: run 3 failed and run 2's comparison is untested.
     assert {k: v["id"] for k, v in chosen.items()} == {"c4": 100, "c1": 103}
 
 
 def test_an_untested_newer_one_vs_rest_falls_back_to_the_older_tested_one():
-    chosen = scrna_de_reads.one_vs_rest(reads(), [2, 1], ["c3"])
+    chosen = de_choice.read_one_vs_rest(reads(), [2, 1], ["c3"])
     assert chosen["c3"]["id"] == 106
 
 
 def test_a_one_vs_rest_row_comparing_another_cluster_is_not_chosen():
-    assert scrna_de_reads.one_vs_rest(reads(), [2, 1], ["c5"]) == {}
+    assert de_choice.read_one_vs_rest(reads(), [2, 1], ["c5"]) == {}
 
 
 def test_no_runs_or_no_cell_types_choose_nothing():
-    assert scrna_de_reads.one_vs_rest(reads(), [], ["c4"]) == {}
+    assert de_choice.read_one_vs_rest(reads(), [], ["c4"]) == {}
+    assert de_choice.read_one_vs_rest(reads(), [2, 1], []) == {}
     assert scrna_de_reads.genotype(reads(), [], ["c4"], None, whole=True) == []
     assert scrna_de_reads.genotype(reads(), [2, 1], [], None, whole=False) == []
 
@@ -144,39 +145,64 @@ def test_a_cut_comparison_read_is_marked_incomplete(monkeypatch):
 # The cluster panel's markers
 
 
-def test_stored_markers_are_the_panels_cleaned_as_the_panel_cleans_them():
-    markers = scrna_de_reads.panel_markers(reads(), 14, ["c4"], [2, 1])
-    c4 = markers["c4"]
+def test_stored_markers_are_the_panels():
+    c4 = scrna_de_reads.panel_markers(reads(), 14, ["c4"], [2, 1])["c4"]
     assert (c4["from"], c4["n_significant"]) == ("stored", 7)
-    # The entry without a gene is dropped; q is the FDR.
-    [beta] = c4["top"]
-    assert (beta["gene"], beta["fdr"], beta["log2fc"]) == ("BETA", 0.0001, 1.5)
+    # The entry without a gene is dropped.
+    assert _names(c4["top"]) == ["BETA", "BARE", "HUGE"]
 
 
 def test_without_stored_markers_the_panel_uses_the_one_vs_rest_comparison():
     # c1's stored top is empty: the panel falls back to comparison 103.
     c1 = scrna_de_reads.panel_markers(reads(), 14, ["c1"], [2, 1])["c1"]
     assert c1["from"] == "comparison"
-    # log2FC > 0 (MID at 0.3 counts), FDR < 0.05, ranked by FDR then log2FC.
-    assert _names(c1["top"]) == ["ZETA", "MID"]
-    assert c1["n_significant"] == 2
+    assert _names(c1["top"]) == ["atMYB41", "ZETA", "MID"]
+    assert c1["n_significant"] == 3
+
+
+def test_stored_and_comparison_markers_have_one_shape():
+    markers = scrna_de_reads.panel_markers(reads(), 14, ["c4", "c1"], [2, 1])
+    stored, computed = markers["c4"]["top"][0], markers["c1"]["top"][0]
+    assert stored.keys() == computed.keys()
+    assert (stored["symbol"], stored["source"]) == ("B1", "wilcoxon")
+    assert computed["symbol"] is None and computed["source"] is None
+
+
+def test_a_stored_off_scale_fold_change_is_flagged():
+    top = scrna_de_reads.panel_markers(reads(), 14, ["c4"], [2, 1])["c4"]["top"]
+    huge = next(m for m in top if m["gene"] == "HUGE")
+    assert huge["log2fc"] == 27.0 and huge["likely_found_in_one_group_only"]
+    assert not huge["found_in_one_group_only"]
+
+
+def test_markers_stop_when_the_call_runs_late():
+    # c4's stored markers are read; c1's comparison isn't.
+    found = scrna_de_reads.panel_markers(
+        reads(), 14, ["c4", "c1"], [2, 1], lambda: True
+    )
+    assert found["c4"]["from"] == "stored" and found["c1"]["from"] == "not_read"
 
 
 def test_no_stored_markers_and_no_comparison_means_no_markers():
     assert scrna_de_reads.panel_markers(reads(), 14, ["c7", "c2"], [2, 1]) == {}
 
 
-def test_the_panel_fallback_lists_at_most_the_panels_25(monkeypatch):
-    monkeypatch.setattr(de_choice, "TOP_MARKERS", 1)
-    c1 = scrna_de_reads.panel_markers(reads(), 14, ["c1"], [2, 1])["c1"]
-    assert _names(c1["top"]) == ["ZETA"] and c1["n_significant"] == 2
+def test_the_panel_count_is_read_only_when_its_list_was_cut(monkeypatch):
+    r = reads()
+    scrna_de_reads.panel_markers(r, 14, ["c1"], [2, 1])
+    assert r.reader.counts == []
+    monkeypatch.setattr(cluster_panel, "TOP_MARKERS", 1)
+    r = reads()
+    c1 = scrna_de_reads.panel_markers(r, 14, ["c1"], [2, 1])["c1"]
+    assert _names(c1["top"]) == ["atMYB41"] and c1["n_significant"] == 3
+    assert r.reader.counts == [("scrna_de_genes", True)]
 
 
 # The DE tab's passing genes
 
 
 def test_up_genes_rank_by_fdr_then_gene_name_and_count_in_full():
-    genes, count = scrna_de_reads.de_genes(reads(), 100, 20)["up"]
+    genes, count = scrna_de_reads.de_genes(reads(), comparison(100), 20)["up"]
     assert _names(genes) == [
         "BETA", "ALPHA", "MID", "ZETA", "INFGENE", "BIGGENE", "EDGE",
     ]  # fmt: skip
@@ -185,37 +211,63 @@ def test_up_genes_rank_by_fdr_then_gene_name_and_count_in_full():
 
 def test_the_top_cut_at_a_tie_keeps_the_websites_order():
     # Ids order ZETA (id 1) before ALPHA (id 2); the website orders by name.
-    genes, count = scrna_de_reads.de_genes(reads(), 100, 2)["up"]
+    genes, count = scrna_de_reads.de_genes(reads(), comparison(100), 2)["up"]
     assert _names(genes) == ["BETA", "ALPHA"]
     assert count == 7
 
 
-def test_names_compare_ignoring_case_first():
-    # Codepoints put ATZ1 first; the website's localeCompare puts atMYB41 first.
-    genes, _ = scrna_de_reads.de_genes(reads(), 204, 1)["up"]
-    assert _names(genes) == ["atMYB41"]
+def test_names_tied_on_fdr_order_as_the_website_orders_them():
+    # localeCompare: letters before case, then lower case first.
+    genes, _ = scrna_de_reads.de_genes(reads(), comparison(204), 3)["up"]
+    assert _names(genes) == ["atMYB41", "ATMYB41", "ATZ1"]
+
+
+@pytest.mark.parametrize(
+    "ordered",
+    [
+        # As node's localeCompare sorts them.
+        ["gene_1", "gene-1", "gene.1", "gene10", "gene2", "GFP_ER", "GFP1"],
+        ["a", "A", "aa", "aA", "Aa", "AA", "ab", "aB", "Ab", "AB"],
+        ["e", "E", "é", "É", "éa", "eb", "ef", "f"],
+        ["a b", "a,b", "a'b", "a1", "ab"],
+    ],
+)
+def test_the_name_order_is_the_websites(ordered):
+    assert sorted(reversed(ordered), key=scrna_de_reads.name_order) == ordered
 
 
 def test_a_tie_never_brings_in_the_other_direction():
     # ALPHA is down at the same FDR as MID and ZETA, and sorts first by name.
-    genes, count = scrna_de_reads.de_genes(reads(), 202, 1)["up"]
+    genes, count = scrna_de_reads.de_genes(reads(), comparison(202), 1)["up"]
     assert _names(genes) == ["MID"] and count == 2
 
 
 def test_genes_on_the_cuts_do_not_pass():
-    # BETA has log2FC exactly 0.5 and LATE an FDR of exactly 0.05.
-    found = scrna_de_reads.de_genes(reads(), 202, 50)
+    # BETA has log2FC exactly 0.5, DOWN2 -0.5 and LATE an FDR of exactly 0.05.
+    found = scrna_de_reads.de_genes(reads(), comparison(202), 50)
     assert _names(found["up"][0]) == ["MID", "ZETA"]
     assert _names(found["down"][0]) == ["ALPHA", "DOWN1"]
 
 
+def test_an_untested_comparison_has_no_genes_to_list():
+    # The website shows "not tested", not "no genes".
+    assert scrna_de_reads.de_genes(reads(), comparison(201), 20) is None
+    assert scrna_de_reads.de_genes(reads(), comparison(203), 20) is None
+
+
+def test_the_count_is_read_only_when_a_list_was_cut():
+    r = reads()
+    scrna_de_reads.de_genes(r, comparison(202), 50)
+    assert r.reader.counts == []
+
+
 def test_down_genes_listed_on_their_own():
-    genes, count = scrna_de_reads.de_genes(reads(), 100, 20)["down"]
+    genes, count = scrna_de_reads.de_genes(reads(), comparison(100), 20)["down"]
     assert _names(genes) == ["DOWN1", "DOWN2"] and count == 2
 
 
 def test_a_nan_fold_change_is_never_up_down_or_counted():
-    found = scrna_de_reads.de_genes(reads(), 100, 50)
+    found = scrna_de_reads.de_genes(reads(), comparison(100), 50)
     (up, n_up), (down, n_down) = found["up"], found["down"]
     assert "NANGENE" not in _names(up) + _names(down)
     assert (n_up, n_down) == (7, 2)
@@ -223,20 +275,20 @@ def test_a_nan_fold_change_is_never_up_down_or_counted():
 
 @pytest.mark.parametrize("top", [0, -3])
 def test_no_genes_asked_for_lists_none_but_still_counts(top):
-    genes, count = scrna_de_reads.de_genes(reads(), 100, top)["up"]
+    genes, count = scrna_de_reads.de_genes(reads(), comparison(100), top)["up"]
     assert genes == [] and count == 7
 
 
 def test_top_is_capped_at_max_rows(monkeypatch):
     monkeypatch.setattr(gene_reads, "MAX_ROWS", 3)
-    genes, _ = scrna_de_reads.de_genes(reads(), 100, 1000)["up"]
+    genes, _ = scrna_de_reads.de_genes(reads(), comparison(100), 1000)["up"]
     assert len(genes) == 3
 
 
 def test_an_unknown_count_is_none_not_zero():
     r = reads()
     r.reader.count = lambda *a, **k: None
-    genes, count = scrna_de_reads.de_genes(r, 100, 2)["up"]
+    genes, count = scrna_de_reads.de_genes(r, comparison(100), 2)["up"]
     assert len(genes) == 2 and count is None
 
 
@@ -250,7 +302,7 @@ def test_an_unknown_count_is_none_not_zero():
     ],
 )
 def test_large_fold_changes(gene, log2fc, one_group, likely):
-    genes, _ = scrna_de_reads.de_genes(reads(), 100, 20)["up"]
+    genes, _ = scrna_de_reads.de_genes(reads(), comparison(100), 20)["up"]
     row = next(g for g in genes if g["gene"] == gene)
     assert row["log2fc"] == log2fc
     assert row["found_in_one_group_only"] is one_group
@@ -258,6 +310,6 @@ def test_large_fold_changes(gene, log2fc, one_group, likely):
 
 
 def test_a_negative_infinite_fold_change_is_down_and_one_group():
-    genes, _ = scrna_de_reads.de_genes(reads(), 100, 20)["down"]
+    genes, _ = scrna_de_reads.de_genes(reads(), comparison(100), 20)["down"]
     row = next(g for g in genes if g["gene"] == "DOWN2")
     assert row["log2fc"] is None and row["found_in_one_group_only"]

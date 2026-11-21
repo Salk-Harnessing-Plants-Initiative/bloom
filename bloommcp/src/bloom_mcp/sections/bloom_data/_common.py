@@ -139,12 +139,32 @@ def lookup_failed(exc: TableReadError) -> BloomMCPError:
     slow = isinstance(exc, QueryTimedOut)
     return BloomMCPError(
         code="tool_error",
-        message="The gene lookup took longer than the database allows "
-        f"({STATEMENT_TIMEOUT_SECONDS} s)."
-        if slow
-        else "The gene lookup couldn't read Bloom's tables.",
+        message=(
+            "The gene lookup took longer than the database allows "
+            f"({STATEMENT_TIMEOUT_SECONDS} s)."
+            if slow
+            else "The gene lookup couldn't read Bloom's tables."
+        ),
         remedy="Try again in a moment; if it keeps failing, tell the user the Bloom team "
         "can look into it, and read the gene's tables with query_table meanwhile.",
+    )
+
+
+def de_failed(exc: TableReadError) -> BloomMCPError:
+    """read_failed's wording for scrna_de, which takes a dataset and cell types."""
+    if isinstance(exc, (DatabaseBusy, DatabaseUnavailable)):
+        return read_failed(exc)
+    slow = isinstance(exc, QueryTimedOut)
+    return BloomMCPError(
+        code="tool_error",
+        message=(
+            "Reading this dataset's DE took longer than the database allows "
+            f"({STATEMENT_TIMEOUT_SECONDS} s)."
+            if slow
+            else "This dataset's DE couldn't be read."
+        ),
+        remedy="Ask for fewer cell types or one contrast; if it keeps failing, tell the "
+        "user the Bloom team can look into it, and give them the dataset's DE tab.",
     )
 
 
@@ -174,6 +194,7 @@ def _reports(
 reports_read_errors = _reports(read_failed)
 reports_call_errors = _reports(call_failed)
 reports_lookup_errors = _reports(lookup_failed)
+reports_de_errors = _reports(de_failed)
 
 
 class FilterParam(BaseModel):
