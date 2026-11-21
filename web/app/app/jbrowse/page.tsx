@@ -1,26 +1,26 @@
 import { redirect } from "next/navigation";
 
-import { GenomeGeneSearch } from "@/components/genome-gene-search";
-import JBrowseClient from "@/components/jbrowse-client";
+import { GenomeBrowserView } from "@/components/genome-browser-view";
 import {
   INVALID_LINK_MESSAGE,
-  bloomGenomesNote,
   notOfferedMessage,
+  pageNotes,
   parseGenomeVersion,
 } from "@/lib/jbrowse/bloom-genomes";
-import { geneLinkRedirect, loadBrowserConfig, whyNotOffered } from "@/lib/jbrowse/bloom-genomes-server";
+import { geneLinkRedirect, loadBrowserConfig, placePicks, whyNotOffered } from "@/lib/jbrowse/bloom-genomes-server";
+import type { PicksPlan } from "@/lib/jbrowse/several-genes";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 export default async function GenomeBrowser({
   searchParams,
 }: {
-  searchParams: Promise<Record<"genome" | "loc" | "missing", string | string[] | undefined>>;
+  searchParams: Promise<Record<"genome" | "loc" | "missing" | "genes", string | string[] | undefined>>;
 }) {
   const supabase = await createServerSupabaseClient();
   const loaded = await loadBrowserConfig(supabase);
 
   const params = await searchParams;
-  const first = (key: "genome" | "loc" | "missing") =>
+  const first = (key: "genome" | "loc" | "missing" | "genes") =>
     ((Array.isArray(params[key]) ? params[key][0] : params[key]) ?? "").trim();
   const link = first("genome");
   const missing = first("missing");
@@ -35,6 +35,14 @@ export default async function GenomeBrowser({
     linkNotice = `${first("loc")} could not be looked up in ${link}.`;
   }
   if (geneRedirect) redirect(geneRedirect);
+
+  let picks: PicksPlan | null = null;
+  try {
+    picks = await placePicks(supabase, loaded, link, first("genes"));
+  } catch (err) {
+    console.error("[genome browser]", err);
+    linkNotice = `The picked genes could not be looked up in ${link}.`;
+  }
 
   if (link && !loaded.error && !loaded.config.assemblies.some((a) => a.name === link)) {
     if (!parseGenomeVersion(link)) {
@@ -52,14 +60,12 @@ export default async function GenomeBrowser({
 
   return (
     <div className="space-y-2">
-      {linkNotice && <p className="px-4 text-sm text-red-700">{linkNotice}</p>}
-      <p className="px-4 text-sm text-stone-600">
-        {bloomGenomesNote(loaded.bloomGenomes.length, loaded.error)} Open a genome from the
-        start screen, then switch on its tracks with the track selector; links from other pages
-        open with the genes shown.
-      </p>
-      {loaded.bloomGenomes.length > 0 && <GenomeGeneSearch />}
-      <JBrowseClient loaded={loaded} />
+      {pageNotes(loaded.error, linkNotice, ...(picks?.notes ?? [])).map((note) => (
+        <p key={note} className="px-4 text-sm text-red-700">
+          {note}
+        </p>
+      ))}
+      <GenomeBrowserView loaded={loaded} picks={picks} />
     </div>
   );
 }

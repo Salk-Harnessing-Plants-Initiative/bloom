@@ -15,7 +15,9 @@ import {
   type UnavailableReason,
 } from "./bloom-genomes";
 import { browserConfig } from "./config";
-import { browserLink, isRegion, placeGenes } from "./gene-links";
+import type { GeneStart } from "./gene-density";
+import { browserLink, isRegion, placeGenes, type GenePlace } from "./gene-links";
+import { missingNote, readPicks, tooManyNote, type PicksPlan } from "./several-genes";
 
 /** How long a signed build-file URL works, in seconds. */
 export const SIGNED_URL_TTL_S = 3600;
@@ -166,4 +168,81 @@ export async function geneLinkRedirect(
   return place
     ? browserLink(place)
     : `/app/jbrowse?genome=${encodeURIComponent(link)}&missing=${encodeURIComponent(loc)}`;
+}
+
+/** The plan for `?genome=<offered version>&genes=<id>,...`; null without picks or for a genome
+ * Bloom does not offer (the page already says why). */
+export async function placePicks(
+  supabase: Client,
+  loaded: Pick<LoadedBrowserConfig, "bloomBuilds">,
+  link: string,
+  param: string,
+): Promise<PicksPlan | null> {
+  const buildId = loaded.bloomBuilds[link];
+  const { genes, tooMany } = readPicks(param);
+  if (buildId === undefined || (genes.length === 0 && tooMany === null)) return null;
+  if (tooMany !== null) return { assembly: link, places: [], notes: [tooManyNote(tooMany)] };
+  const found = await placeGenes(supabase, { buildId, assembly: link, label: link }, genes);
+  const places = genes.map((g) => found.get(g)).filter((p): p is GenePlace => p !== undefined);
+  const missing = genes.filter((g) => !found.has(g));
+  return { assembly: link, places, notes: missing.length ? [missingNote(missing, link)] : [] };
+}
+
+/** Genes read per request when reading a whole build. */
+const GENE_PAGE = 10_000;
+
+export type BuildGeneStarts =
+  | { status: "ok"; genes: GeneStart[] }
+  | { status: "not found" }
+  | { status: "failed"; reason: string };
+
+/** Every gene's contig and start in a ready build of a ready version, read in pages and checked
+ * against the gene count the build recorded, so a short read is never shown as fewer genes. */
+export async function readBuildGeneStarts(supabase: Client, buildId: number): Promise<BuildGeneStarts> {
+  const { data: build, error } = await supabase
+    .from("genome_browser_builds")
+    .select("gene_count, genome_reference_versions!inner(status)")
+    .eq("id", buildId)
+    .eq("status", "ready")
+    .eq("genome_reference_versions.status", "ready")
+    .maybeSingle();
+  if (error) return { status: "failed", reason: `reading build ${buildId}: ${error.message}` };
+  if (!build) return { status: "not found" };
+
+  const expected = (build as { gene_count: number | null }).gene_count;
+  if (expected === null) return { status: "failed", reason: `build ${buildId} records no gene count` };
+
+  // Read from where the last page ended, so a server row limit below GENE_PAGE skips nothing.
+  const genes: GeneStart[] = [];
+  while (genes.length < expected) {
+    const from = genes.length;
+    const { data, error: pageError } = await supabase
+      .from("genome_browser_genes")
+      .select("contig, gene_start")
+      .eq("browser_build_id", buildId)
+      .order("gene_id")
+      .range(from, from + GENE_PAGE - 1);
+    if (pageError) return { status: "failed", reason: `reading build ${buildId}'s genes: ${pageError.message}` };
+    const rows = (data ?? []) as { contig: string; gene_start: number }[];
+    if (rows.length === 0) break;
+    genes.push(...rows.map((r) => ({ contig: r.contig, start: r.gene_start })));
+  }
+  if (genes.length !== expected) {
+    return { status: "failed", reason: `read ${genes.length} of build ${buildId}'s ${expected} genes` };
+  }
+  return { status: "ok", genes };
+}
+
+/** Whether a browser build is ready and its version too: checked before answering from memory,
+ * so a withdrawn build stops being served. */
+export async function buildIsReady(supabase: Client, buildId: number): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("genome_browser_builds")
+    .select("id, genome_reference_versions!inner(status)")
+    .eq("id", buildId)
+    .eq("status", "ready")
+    .eq("genome_reference_versions.status", "ready")
+    .maybeSingle();
+  if (error) throw new Error(`reading build ${buildId}: ${error.message}`);
+  return data !== null;
 }
