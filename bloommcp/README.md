@@ -31,6 +31,8 @@ Installable `uv` package under `src/bloom_mcp/`:
   `scrna_de` reads one scRNA dataset's cell-type markers (as the cluster panel lists them)
   and genotype DE (at the DE tab's default cuts), with links to both
   (`data_access/scrna_de_reads.py`, `cluster_panel.py`, `de_choice.py`).
+  `scrna_gene_cells` lists one gene's expressing cells with cell type, genotype, replicate
+  and UMAP position, highest first, in pages (`gene_cells.py`, `_scrna_dataset.py`).
 - `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
   not tools themselves
 - `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping

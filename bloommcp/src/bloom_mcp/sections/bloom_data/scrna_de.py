@@ -12,8 +12,9 @@ from bloom_mcp.data_access.gene_reads import Reads
 from bloom_mcp.data_access.page_links import page_url
 from bloom_mcp.tools import _ports
 
+from . import _scrna_dataset
 from . import scrna_de_build as build
-from ._common import fix_request, logs_call, reports_de_errors
+from ._common import logs_call, reports_de_errors
 from ._page import MAX_REPLY_CHARS
 from .scrna_de_reply import CellType, Comparison, Markers, ScrnaDeResult, fit
 
@@ -23,8 +24,6 @@ MAX_COMPARISONS = 20
 CALL_SECONDS = 40
 DEFAULT_TOP = 20
 MAX_TOP = 100
-# A dataset kind with no cells of its own (the website treats it as not found).
-REFERENCE_KIND = "reference"
 NO_GENOTYPE = "No genotype comparison for this cell type."
 NO_MARKERS = "No markers: no stored markers and no one-vs-rest comparison."
 
@@ -58,21 +57,6 @@ class ScrnaDeParams(BaseModel):
         le=MAX_TOP,
         description="Genes listed per side of each genotype comparison.",
     )
-
-
-def _dataset(reads: Reads, dataset_id: int) -> dict[str, Any]:
-    dataset = de.live_dataset(reads, dataset_id)
-    if dataset is None:
-        raise fix_request(
-            f"No scRNA dataset {dataset_id}.",
-            "Use a dataset id from the gene lookup or scrna_datasets.",
-        )
-    if dataset.get("kind") == REFERENCE_KIND:
-        raise fix_request(
-            f"Dataset {dataset_id} is a reference atlas with no DE of its own.",
-            "Use a dataset with cells of its own.",
-        )
-    return dataset
 
 
 def _genotype_rows(
@@ -156,7 +140,12 @@ def scrna_de(params: ScrnaDeParams) -> ScrnaDeResult:
     """
     reads = Reads(_ports.table_reader())
     call = build.Call(CALL_SECONDS, MAX_COMPARISONS)
-    dataset = _dataset(reads, params.dataset_id)
+    dataset = _scrna_dataset.dataset(
+        reads,
+        params.dataset_id,
+        lacks="DE",
+        remedy="Use a dataset with cells of its own.",
+    )
     chosen = de.cell_types(reads, params.dataset_id, params.cell_types)
     clusters = [c["cluster_id"] for c in chosen.chosen]
     whole = not any(name.strip() for name in params.cell_types)

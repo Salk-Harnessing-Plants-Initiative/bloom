@@ -86,3 +86,20 @@ def genes_db():
     _ports.configure(table_reader=fake)
     yield fake
     _ports.configure(table_reader=previous)
+
+
+@pytest.fixture
+def expression_db(monkeypatch):
+    """The scRNA expression tools' fake Bloom (scrna_expression_data), a fresh copy per test."""
+    from scrna_expression_data import CELL_ARRAYS, CELLS, FILES, SITE, TABLES
+
+    from bloom_mcp.data_access.fake_file_reader import FakeFileReader
+
+    monkeypatch.setenv("SITE_URL", SITE)
+    fake = FakeTableReader(copy.deepcopy(TABLES))
+    fake.function_rows = {"scrna_cell_arrays": (CELL_ARRAYS, copy.deepcopy(CELLS))}
+    files = FakeFileReader(FILES)
+    previous = (_ports.table_reader(), _ports.file_reader())
+    _ports.configure(table_reader=fake, file_reader=files)
+    yield fake, files
+    _ports.configure(table_reader=previous[0], file_reader=previous[1])

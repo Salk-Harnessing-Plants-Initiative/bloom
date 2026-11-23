@@ -650,6 +650,8 @@ services:
       # pays re-parse cost on every cold start. Redirecting to /tmp/pycache
       # restores the normal caching path.
       PYTHONPYCACHEPREFIX: /tmp/pycache
+      # matplotlib's font cache, kept in one writable place under read_only: true.
+      MPLCONFIGDIR: /tmp/matplotlib
     volumes:
       - ./bloommcp/data/TRAITS_DIR:/app/data/TRAITS_DIR
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
