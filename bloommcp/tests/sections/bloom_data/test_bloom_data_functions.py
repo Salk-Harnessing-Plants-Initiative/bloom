@@ -7,7 +7,7 @@ import pytest
 
 from bloom_mcp.contract.errors import BloomMCPError
 from bloom_mcp.data_access import function_access
-from bloom_mcp.data_access.function_access import MAX_SEARCH_ROWS
+from bloom_mcp.data_access.function_access import MAX_SEARCH_ROWS, ReadableFunction
 from bloom_mcp.data_access.table_ports import (
     BadFilterValue,
     DatabaseUnavailable,
@@ -15,6 +15,7 @@ from bloom_mcp.data_access.table_ports import (
     FunctionRejected,
     Param,
     QueryTimedOut,
+    Sort,
     TableReadError,
 )
 from bloom_mcp.sections.bloom_data._common import MAX_IN_VALUES, plain_value
@@ -45,8 +46,25 @@ TRAIT_ROWS = [
 ]
 
 
+# A paged search and a top-N search, registered by the tests themselves.
+TEST_FUNCTIONS = {
+    "search_genes": ReadableFunction(
+        "Find proteins by part of their gene id.",
+        (Sort("uid"),),
+        page_input="max_results",
+    ),
+    "knn_search_esm2": ReadableFunction(
+        "Proteins most similar to one protein uid.",
+        (Sort("similarity", descending=True), Sort("uid")),
+        count_input="match_count",
+    ),
+}
+
+
 @pytest.fixture
-def functions(reader):
+def functions(reader, monkeypatch):
+    for name, entry in TEST_FUNCTIONS.items():
+        monkeypatch.setitem(function_access.READABLE_FUNCTIONS, name, entry)
     reader.function_rows = {
         "search_genes": (SEARCH, PROTEINS),
         "knn_search_esm2": (NEAREST, SIMILAR),
@@ -280,13 +298,6 @@ def test_every_limit_input_names_one_kind():
 def test_trait_functions_break_ties_on_the_value(name):
     order = function_access.READABLE_FUNCTIONS[name].order
     assert order[-1].column == "trait_value"
-
-
-@pytest.mark.parametrize(
-    "name", ["knn_search_esm2", "knn_search_esm3", "best_match_per_accession"]
-)
-def test_similarity_searches_say_they_take_a_protein_uid(name):
-    assert "uid" in function_access.READABLE_FUNCTIONS[name].description
 
 
 def test_call_function_describes_its_limits_and_values():
