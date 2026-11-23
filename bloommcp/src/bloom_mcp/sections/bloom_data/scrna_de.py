@@ -140,7 +140,12 @@ def scrna_de(params: ScrnaDeParams) -> ScrnaDeResult:
     """
     reads = Reads(_ports.table_reader())
     call = build.Call(CALL_SECONDS, MAX_COMPARISONS)
-    dataset = _scrna_dataset.dataset(reads, params.dataset_id, lacks="DE")
+    dataset = _scrna_dataset.dataset(
+        reads,
+        params.dataset_id,
+        lacks="DE",
+        remedy="Use a dataset with cells of its own.",
+    )
     chosen = de.cell_types(reads, params.dataset_id, params.cell_types)
     clusters = [c["cluster_id"] for c in chosen.chosen]
     whole = not any(name.strip() for name in params.cell_types)

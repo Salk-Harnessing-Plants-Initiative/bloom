@@ -54,6 +54,12 @@ def test_deleted_missing_and_reference_datasets_are_refused(db, dataset_id, matc
         tool.scrna_de({"dataset_id": dataset_id})
 
 
+def test_a_reference_atlas_is_sent_to_a_dataset_with_cells(db):
+    with pytest.raises(BloomMCPError) as refused:
+        tool.scrna_de({"dataset_id": 16})
+    assert refused.value.remedy == "Use a dataset with cells of its own."
+
+
 def test_links_open_the_de_tab_and_the_cell_types(db, monkeypatch):
     monkeypatch.setenv("SITE_URL", SITE)
     result = _call()

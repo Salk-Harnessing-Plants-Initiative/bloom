@@ -17,9 +17,12 @@ MAX_CELLS = 200_000
 # A dataset kind with no cells of its own (the website treats it as not found).
 REFERENCE_KIND = "reference"
 CELL_ARRAYS = "scrna_cell_arrays"
+FOR_THE_GENE = "Use one of the datasets the gene lookup lists for the gene."
 
 
-def dataset(reads: Reads, dataset_id: int, lacks: str = "cells") -> dict[str, Any]:
+def dataset(
+    reads: Reads, dataset_id: int, lacks: str = "cells", remedy: str = FOR_THE_GENE
+) -> dict[str, Any]:
     """The live dataset, refusing a missing, deleted or reference one (it has no `lacks`)."""
     found = de.live_dataset(reads, dataset_id)
     if found is None:
@@ -30,7 +33,7 @@ def dataset(reads: Reads, dataset_id: int, lacks: str = "cells") -> dict[str, An
     if found.get("kind") == REFERENCE_KIND:
         raise fix_request(
             f"Dataset {dataset_id} is a reference atlas with no {lacks} of its own.",
-            "Use one of the datasets the gene lookup lists for the gene.",
+            remedy,
         )
     return found
 
