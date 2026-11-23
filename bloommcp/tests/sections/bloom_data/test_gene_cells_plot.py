@@ -207,3 +207,34 @@ def test_a_gene_with_group_colours_still_pages_its_cells(expression_db, grouped)
     result, [_] = _split(_run(color_by="genotype"))
     assert [c.cell for c in result.cells] == [1, 2, 3]
     assert result.page_url == f"{SITE}/app/expression/16/3?tab=umap"
+
+
+def _unplace(db, *cells):
+    reader, _ = db
+    for i in cells:
+        reader.function_rows["scrna_cell_arrays"][1][i].update(x=None, y=None)
+
+
+def test_a_cell_with_no_umap_position_is_left_off_the_map(expression_db, drawn):
+    _unplace(expression_db, 1)
+    result, [_] = _split(_run(plot="umap", cell_types=["x"]))
+    assert list(drawn["values"]) == [0.0, 2.0, 1.0, 0.0]
+    assert list(drawn["codes"]) == [0, 1, 1, -1]
+    assert list(drawn["focus"]) == [False, True, True, False]
+    assert "1 cell has no UMAP position and is not drawn." in result.notes
+
+
+def test_group_colours_leave_off_cells_with_no_position(expression_db, grouped):
+    _unplace(expression_db, 0, 4)
+    result, [_] = _split(
+        tool.scrna_gene_cells({"dataset_id": 3, "color_by": "genotype"})
+    )
+    assert list(grouped["groups"]) == [1, 1, 0]
+    assert "2 cells have no UMAP position and are not drawn." in result.notes
+
+
+def test_no_cell_with_a_position_draws_nothing(expression_db):
+    _unplace(expression_db, 0, 1, 2, 3, 4)
+    result, images = _split(_run(plot="umap"))
+    assert images == [] and len(result.cells) == 3
+    assert "No cell has a UMAP position, so there is no plot." in result.notes

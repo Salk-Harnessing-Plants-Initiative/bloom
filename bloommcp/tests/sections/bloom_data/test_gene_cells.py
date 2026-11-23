@@ -267,6 +267,17 @@ def test_a_cell_with_no_cell_type(expression_db):
     )
 
 
+def test_a_cell_with_no_umap_position_is_listed_without_one(expression_db):
+    reader, _ = expression_db
+    reader.function_rows["scrna_cell_arrays"][1][1].update(x=None, y=None)
+    result = _run()
+    assert [(c.cell, c.x, c.y) for c in result.cells] == [
+        (1, None, None),
+        (2, 0.0, 1.0),
+        (3, 1.0, 1.0),
+    ]
+
+
 def test_a_symbol_with_two_genes_reads_the_first_and_names_the_other(expression_db):
     result = _run(gene="PAIR")
     assert result.gene_name == "AT2G02020"

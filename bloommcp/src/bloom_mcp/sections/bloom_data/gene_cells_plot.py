@@ -15,6 +15,8 @@ from bloom_mcp.data_access.scrna_plots import _png, umap, umap_groups
 
 from ._page import _cut
 
+NOWHERE = "No cell has a UMAP position, so there is no plot."
+
 
 @dataclass(frozen=True)
 class _Map:
@@ -25,6 +27,8 @@ class _Map:
     names: list[str]
     colours: list[umap_groups.Rgb]
     focus: np.ndarray | None
+    # Which of the call's cells have a UMAP position; only those are drawn.
+    placed: np.ndarray
 
 
 def _map(
@@ -37,23 +41,40 @@ def _map(
     if scope is not None:
         focus = np.zeros(len(cells), dtype=bool)
         focus[list(scope)] = True
+    x = np.array([c["x"] for c in cells], dtype=float)
+    y = np.array([c["y"] for c in cells], dtype=float)
+    placed = np.isfinite(x) & np.isfinite(y)
+    codes = np.array([level.get(c.get("cluster_ordinal"), -1) for c in cells], int)
     return _Map(
-        x=np.array([c["x"] for c in cells], dtype=float),
-        y=np.array([c["y"] for c in cells], dtype=float),
-        codes=np.array([level.get(c.get("cluster_ordinal"), -1) for c in cells]),
+        x=x[placed],
+        y=y[placed],
+        codes=codes[placed],
         names=[t.name for t in types],
         colours=[umap_groups.stored_colour(stored.get(t.ordinal)) for t in types],
-        focus=focus,
+        focus=None if focus is None else focus[placed],
+        placed=placed,
     )
 
 
+def _unplaced(m: _Map) -> list[str]:
+    """A note on cells with no UMAP position, which are left off the map."""
+    missing = int((~m.placed).sum())
+    if missing == 0:
+        return []
+    if missing == 1:
+        return ["1 cell has no UMAP position and is not drawn."]
+    return [f"{missing:,} cells have no UMAP position and are not drawn."]
+
+
 def _image(
-    build: Callable[[], Figure], title: str, deadline: float
+    build: Callable[[], Figure], m: _Map, title: str, deadline: float
 ) -> tuple[ToolImage | None, list[str]]:
+    if not m.placed.any():
+        return None, [NOWHERE]
     drawn = _png.draw(build, deadline)
     if drawn.png is None:
-        return None, [drawn.reason] if drawn.reason else []
-    return ToolImage(drawn.png, "image/png", f"UMAP: {title}"), []
+        return None, _unplaced(m) + ([drawn.reason] if drawn.reason else [])
+    return ToolImage(drawn.png, "image/png", f"UMAP: {title}"), _unplaced(m)
 
 
 def gene_umap(
@@ -66,9 +87,10 @@ def gene_umap(
 ) -> tuple[ToolImage | None, list[str]]:
     """The UMAP coloured by `values`, or notes saying why there is none."""
     m, shown = _map(cells, clusters, scope), _cut(title)[0]
-    lit = np.asarray(values, dtype=float)
+    lit = np.asarray(values, dtype=float)[m.placed]
     return _image(
         lambda: umap.gene_figure(m.x, m.y, lit, m.codes, m.names, m.focus, shown),
+        m,
         shown,
         deadline,
     )
@@ -90,6 +112,7 @@ def group_umap(
         none, none_name = (*umap_groups.NO_CELL_TYPE_COLOUR, 1.0), "No cell type"
     else:
         groups, names = umap_groups.codes([c.get(color_by) for c in cells])
+        groups = groups[m.placed]
         colours = umap_groups.palette(len(names))
         none, none_name = umap_groups.NO_VALUE, expression_stats.NOT_RECORDED
         if not names:
@@ -108,6 +131,7 @@ def group_umap(
             shown,
             none_name=none_name,
         ),
+        m,
         shown,
         deadline,
     )

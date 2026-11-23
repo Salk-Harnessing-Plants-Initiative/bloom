@@ -19,8 +19,8 @@ class CellRow(BaseModel):
     genotype: str | None
     replicate: str | None
     facets: Any = Field(description="The cell's other recorded labels, as stored.")
-    x: float = Field(description="UMAP x.")
-    y: float = Field(description="UMAP y.")
+    x: float | None = Field(description="UMAP x; None when the cell has no position.")
+    y: float | None = Field(description="UMAP y; None when the cell has no position.")
 
 
 class GeneCellsResult(BaseModel):
