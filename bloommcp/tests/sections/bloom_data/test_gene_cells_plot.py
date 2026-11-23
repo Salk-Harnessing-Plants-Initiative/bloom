@@ -261,3 +261,37 @@ def test_group_colours_write_cell_type_names_on_the_map(
     tool.scrna_gene_cells({"dataset_id": 3, "color_by": color_by})
     assert list(grouped["codes"]) == [0, 0, 1, 1, -1]
     assert grouped["labels"] == ["Cortex", "X"]
+
+
+def test_more_groups_than_a_picture_can_colour_draws_nothing(expression_db):
+    reader, _ = expression_db
+    function, _cells = reader.function_rows["scrna_cell_arrays"]
+    many = [
+        {"x": float(i), "y": 0.0, "cluster_ordinal": 0, "genotype": None,
+         "replicate": f"r{i:03d}", "facets": None}
+        for i in range(gene_cells_plot.umap.MAX_GROUPS + 1)
+    ]  # fmt: skip
+    reader.function_rows["scrna_cell_arrays"] = (function, many)
+    result, images = _split(
+        tool.scrna_gene_cells({"dataset_id": 3, "color_by": "replicate"})
+    )
+    assert images == []
+    assert (
+        "51 replicates, more than the 50 one picture can colour, so there is no plot."
+        in result.notes
+    )
+
+
+def test_as_many_groups_as_the_cap_still_draws(expression_db):
+    reader, _ = expression_db
+    function, _cells = reader.function_rows["scrna_cell_arrays"]
+    many = [
+        {"x": float(i), "y": 0.0, "cluster_ordinal": 0, "genotype": None,
+         "replicate": f"r{i:03d}", "facets": None}
+        for i in range(gene_cells_plot.umap.MAX_GROUPS)
+    ]  # fmt: skip
+    reader.function_rows["scrna_cell_arrays"] = (function, many)
+    _, [image] = _split(
+        tool.scrna_gene_cells({"dataset_id": 3, "color_by": "replicate"})
+    )
+    assert image.size == (1200, 900)

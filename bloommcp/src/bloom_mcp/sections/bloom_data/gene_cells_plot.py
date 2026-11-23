@@ -16,6 +16,7 @@ from bloom_mcp.data_access.scrna_plots import _png, umap, umap_groups
 from ._page import _cut
 
 NOWHERE = "No cell has a UMAP position, so there is no plot."
+PLURAL = {"cell_type": "cell types", "genotype": "genotypes", "replicate": "replicates"}
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,11 @@ def group_umap(
         none, none_name = umap_groups.NO_VALUE, expression_stats.NOT_RECORDED
         if not names:
             notes.append(f"No cell records a {color_by}, so every cell is grey.")
+    if len(names) > umap.MAX_GROUPS:
+        return None, notes + [
+            f"{len(names):,} {PLURAL[color_by]}, more than the {umap.MAX_GROUPS} one "
+            "picture can colour, so there is no plot."
+        ]
     image, reasons = _image(
         lambda: umap.group_figure(
             m.x,
