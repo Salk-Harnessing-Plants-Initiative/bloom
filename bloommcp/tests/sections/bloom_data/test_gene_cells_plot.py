@@ -130,6 +130,7 @@ def grouped(monkeypatch):
 
     def record(x, y, groups, colours, none, names, codes, labels, focus, title, **kw):
         seen.update(groups=groups, colours=colours, none=none, names=names, title=title)
+        seen.update(codes=codes, labels=labels, focus=focus)
         seen.update(kw)
         return real(
             x, y, groups, colours, none, names, codes, labels, focus, title, **kw
@@ -238,3 +239,25 @@ def test_no_cell_with_a_position_draws_nothing(expression_db):
     result, images = _split(_run(plot="umap"))
     assert images == [] and len(result.cells) == 3
     assert "No cell has a UMAP position, so there is no plot." in result.notes
+
+
+@pytest.mark.parametrize("color_by", ["cell_type", "genotype", "replicate"])
+def test_group_colours_grey_the_cells_outside_the_named_cell_types(
+    expression_db, grouped, color_by
+):
+    tool.scrna_gene_cells({"dataset_id": 3, "color_by": color_by, "cell_types": ["x"]})
+    assert list(grouped["focus"]) == [False, False, True, True, False]
+
+
+def test_group_colours_with_no_cell_types_grey_nothing(expression_db, grouped):
+    tool.scrna_gene_cells({"dataset_id": 3, "color_by": "genotype"})
+    assert grouped["focus"] is None
+
+
+@pytest.mark.parametrize("color_by", ["cell_type", "genotype", "replicate"])
+def test_group_colours_write_cell_type_names_on_the_map(
+    expression_db, grouped, color_by
+):
+    tool.scrna_gene_cells({"dataset_id": 3, "color_by": color_by})
+    assert list(grouped["codes"]) == [0, 0, 1, 1, -1]
+    assert grouped["labels"] == ["Cortex", "X"]
