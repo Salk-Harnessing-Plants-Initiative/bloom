@@ -14,7 +14,18 @@ vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(q
 const evaluate = vi.fn();
 const createViewState = vi.fn((opts: { config: unknown }) => ({
   config: opts.config,
-  session: { views: [], id: Math.random() },
+  session: {
+    views: [],
+    id: Math.random(),
+    assemblyManager: {
+      waitForAssembly: async () => ({
+        regions: [
+          { refName: "Chr1", start: 0, end: 30_427_671 },
+          { refName: "Chr2", start: 0, end: 19_698_289 },
+        ],
+      }),
+    },
+  },
   pluginManager: { evaluateAsyncExtensionPoint: evaluate },
 }));
 vi.mock("@jbrowse/react-app2", () => ({
@@ -41,7 +52,7 @@ const loadedWith = () =>
     error: null,
   }) as unknown as LoadedBrowserConfig;
 const gene: GenePlace = { gene: "G1", name: null, assembly: "a.v1", label: "a v1", contig: "Chr1", start: 10, end: 90 };
-const TRACKS = ["a.v1-genes", "a.v1-gene-density"];
+const TRACKS = ["a.v1-genes"];
 const made = () => createViewState.mock.results.map((r) => r.value);
 
 beforeEach(() => {
@@ -69,7 +80,7 @@ describe("JBrowse", () => {
     expect(onChange).toHaveBeenCalled();
   });
 
-  it("opens the link's genome at its location with its genes and density", async () => {
+  it("opens the link's genome at its location with its genes", async () => {
     query = "genome=a.v1&loc=Chr1:1..9";
     render(<JBrowse loaded={loadedWith()} picks={null} />);
     await waitFor(() => expect(evaluate).toHaveBeenCalled());
@@ -80,6 +91,17 @@ describe("JBrowse", () => {
       session: made()[0].session,
     });
     expect(openPicks).not.toHaveBeenCalled();
+  });
+
+  it("opens the newest Bloom genome on its first chromosome's first 1 Mb when the link names nothing", async () => {
+    render(<JBrowse loaded={loadedWith()} picks={null} />);
+    await waitFor(() => expect(evaluate).toHaveBeenCalled());
+    expect(evaluate).toHaveBeenCalledWith("LaunchView-LinearGenomeView", {
+      tracks: TRACKS,
+      loc: "Chr1:1..1000000",
+      assembly: "a.v1",
+      session: made()[0].session,
+    });
   });
 
   it("opens placed picks through the session instead", async () => {

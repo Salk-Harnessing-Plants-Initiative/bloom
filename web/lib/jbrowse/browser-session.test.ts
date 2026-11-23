@@ -13,7 +13,7 @@ const view = (type: string, assemblyNames: string[], init?: { assembly: string }
   setHighlight: vi.fn(),
 });
 
-const TRACKS = ["b.v2-genes", "b.v2-density"];
+const TRACKS = ["b.v2-genes"];
 
 const place = (gene: string, assembly: string, label = assembly): GenePlace => ({
   gene,
@@ -82,7 +82,7 @@ describe("goToGene", () => {
     expect(session.addView).not.toHaveBeenCalled();
   });
 
-  it("opens a view of the genome, with its genes and density shown, when none is open", async () => {
+  it("opens a view of the genome, with the given tracks shown, when none is open", async () => {
     const session = { views: [view("LinearGenomeView", ["a.v1"])], addView: vi.fn() };
     await goToGene(session, place("AT1G01010", "b.v2"), TRACKS);
     expect(session.addView).toHaveBeenCalledWith("LinearGenomeView", {

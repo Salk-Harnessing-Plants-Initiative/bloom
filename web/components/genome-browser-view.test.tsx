@@ -51,7 +51,7 @@ const loaded = {
   error: null,
 } as unknown as LoadedBrowserConfig;
 const gene: GenePlace = { gene: "G1", name: null, assembly: "a.v1", label: "a v1", contig: "Chr1", start: 10, end: 90 };
-const TRACKS = ["a.v1-genes", "a.v1-gene-density"];
+const TRACKS = ["a.v1-genes"];
 const session = (assemblies: string[]): BrowserSession => ({
   views: assemblies.map((a) => ({ type: "LinearGenomeView", assemblyNames: [a] })),
 });

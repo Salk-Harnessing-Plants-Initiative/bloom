@@ -16,7 +16,14 @@ export const BLOOM_THEME = {
   components: {
     MuiAppBar: {
       styleOverrides: {
-        root: { backgroundColor: "#f5f5f4", color: "#3f6212", boxShadow: "none", borderBottom: "1px solid #e7e5e4" },
+        root: {
+          backgroundColor: "#f5f5f4",
+          color: "#3f6212",
+          boxShadow: "none",
+          borderBottom: "1px solid #e7e5e4",
+          // JBrowse shows a custom logo at its own size; this keeps it inside the 48 px header.
+          '& img[alt="Custom logo"]': { display: "block", height: 40, width: "auto" },
+        },
       },
     },
   },

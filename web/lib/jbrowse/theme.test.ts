@@ -54,6 +54,11 @@ describe("the browser's configuration", () => {
     expect(configuration.logoPath).toEqual({ uri: "/logo-mark.png", locationType: "UriLocation" });
   });
 
+  it("fits Bloom's mark inside the header", () => {
+    const root = BLOOM_THEME.components.MuiAppBar.styleOverrides.root as Record<string, unknown>;
+    expect(root['& img[alt="Custom logo"]']).toEqual({ display: "block", height: 40, width: "auto" });
+  });
+
   it("draws every outside gene track in Bloom's colours", () => {
     const features = (browserConfig().tracks as { type: string; displays?: unknown }[]).filter(
       (t) => t.type === "FeatureTrack",

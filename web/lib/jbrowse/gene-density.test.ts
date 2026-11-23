@@ -38,7 +38,7 @@ describe("densityBedGraph", () => {
 });
 
 describe("densityTrack", () => {
-  it("reads the build's density route as bedGraph, drawn in Bloom's green", () => {
+  it("reads the build's density route as bedGraph, drawn in a light lime", () => {
     expect(densityTrack("tair10.v1", 4, "tair10 v1")).toEqual({
       type: "QuantitativeTrack",
       trackId: densityTrackId("tair10.v1"),
@@ -49,7 +49,7 @@ describe("densityTrack", () => {
         {
           type: "LinearWiggleDisplay",
           displayId: `${densityTrackId("tair10.v1")}-LinearWiggleDisplay`,
-          renderers: { XYPlotRenderer: { type: "XYPlotRenderer", color: "#4d7c0f" } },
+          renderers: { XYPlotRenderer: { type: "XYPlotRenderer", color: "#bef264" } },
         },
       ],
     });

@@ -4,8 +4,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import type { LoadedBrowserConfig } from "@/lib/jbrowse/bloom-genomes";
-import { openPicks, type BrowserSession } from "@/lib/jbrowse/browser-session";
-import { launchPlan, launchTarget, picksToOpen } from "@/lib/jbrowse/launch";
+import { contigLengths, openPicks, type BrowserSession } from "@/lib/jbrowse/browser-session";
+import { firstRegion, launchPlan, launchTarget, picksToOpen } from "@/lib/jbrowse/launch";
 import type { PicksPlan } from "@/lib/jbrowse/several-genes";
 
 // Lazy load JBrowse only on client side
@@ -79,16 +79,18 @@ function JBrowse({ loaded, picks, onSession, onChange }: JBrowseProps) {
           setLoadingStatus(`Loading ${assembly}${loc ? ` at ${loc}` : ""}...`);
           const places = picksToOpen(target, picked);
           // Without a location JBrowse shows the whole assembly.
+          const launchAt = async (at: string | undefined) =>
+            pluginManager.evaluateAsyncExtensionPoint("LaunchView-LinearGenomeView", {
+              tracks,
+              loc: at,
+              assembly,
+              session: state.session,
+            });
           const opened = places
             ? openPicks(state.session, assembly, places, tracks)
-            : Promise.resolve(
-                pluginManager.evaluateAsyncExtensionPoint("LaunchView-LinearGenomeView", {
-                  tracks,
-                  loc,
-                  assembly,
-                  session: state.session,
-                }),
-              );
+            : target.firstRegion
+              ? contigLengths(state.session, assembly).then((lengths) => launchAt(firstRegion(lengths)))
+              : launchAt(loc);
           opened.catch((err: unknown) => {
             if (live) {
               setLaunchError(`${assembly} could not be opened${loc ? ` at ${loc}` : ""}: ${err instanceof Error ? err.message : String(err)}`);

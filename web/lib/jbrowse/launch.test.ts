@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { browserConfig } from "./config";
 import type { GenePlace } from "./gene-links";
-import { bloomTracks, launchPlan, launchTarget, picksToOpen } from "./launch";
+import { DEFAULT_SPAN_BP, bloomTracks, firstRegion, launchPlan, launchTarget, picksToOpen } from "./launch";
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -50,14 +50,28 @@ describe("launchPlan", () => {
   const loaded = {
     config: { assemblies: [{ name: "Outside.A" }, { name: "at.col0.v2" }], tracks: [] },
     bloomGenomes: ["at.col0.v2"],
+    bloomBuilds: { "at.col0.v2": 4 },
   };
 
   it("shows a Bloom genome's gene track", () => {
     expect(launchPlan({ assembly: "at.col0.v2", loc: "Chr1:1..9" }, loaded)).toEqual({
       assembly: "at.col0.v2",
       loc: "Chr1:1..9",
-      tracks: ["at.col0.v2-genes", "at.col0.v2-gene-density"],
+      tracks: ["at.col0.v2-genes"],
     });
+  });
+
+  it("opens the newest Bloom genome version at its first chromosome when nothing is named", () => {
+    const two = {
+      config: { assemblies: [{ name: "Outside.A" }, { name: "a.v1" }, { name: "b.v2" }], tracks: [] },
+      bloomGenomes: ["b.v2", "a.v1"],
+      bloomBuilds: { "b.v2": 3, "a.v1": 7 },
+    };
+    expect(launchPlan(null, two)).toEqual({ assembly: "a.v1", tracks: ["a.v1-genes"], firstRegion: true });
+  });
+
+  it("opens nothing when nothing is named and Bloom offers no genome", () => {
+    expect(launchPlan(null, { ...loaded, bloomGenomes: [], bloomBuilds: {} })).toBeNull();
   });
 
   it("adds no track for an outside assembly", () => {
@@ -66,7 +80,6 @@ describe("launchPlan", () => {
 
   it("opens nothing for an assembly the browser does not offer", () => {
     expect(launchPlan({ assembly: "at.col0.v9", loc: "Chr1:1..9" }, loaded)).toBeNull();
-    expect(launchPlan(null, loaded)).toBeNull();
   });
 });
 
@@ -94,8 +107,23 @@ describe("browserConfig", () => {
 });
 
 describe("bloomTracks", () => {
-  it("is a Bloom genome version's genes and gene density", () => {
-    expect(bloomTracks("at.col0.v2")).toEqual(["at.col0.v2-genes", "at.col0.v2-gene-density"]);
+  it("is a Bloom genome version's genes only; density waits to be ticked", () => {
+    expect(bloomTracks("at.col0.v2")).toEqual(["at.col0.v2-genes"]);
+  });
+});
+
+describe("firstRegion", () => {
+  it("is the first 1 Mb of the genome's first chromosome", () => {
+    expect(DEFAULT_SPAN_BP).toBe(1_000_000);
+    expect(firstRegion({ Chr1: 30_427_671, Chr2: 19_698_289 })).toBe("Chr1:1..1000000");
+  });
+
+  it("is the whole chromosome when it is shorter", () => {
+    expect(firstRegion({ ChrC: 154_478, Chr1: 30_427_671 })).toBe("ChrC:1..154478");
+  });
+
+  it("is nothing for a genome with no chromosomes", () => {
+    expect(firstRegion({})).toBeUndefined();
   });
 });
 
