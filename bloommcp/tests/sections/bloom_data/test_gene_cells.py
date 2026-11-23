@@ -204,6 +204,45 @@ def test_cell_types_by_id_or_name_in_any_case(expression_db):
     assert [c.cell for c in _run(cell_types=[" c ", "X"]).cells] == [1, 2, 3]
 
 
+def _clusters(db, *rows):
+    """The dataset's clusters as (cluster_id, name) in ordinal order."""
+    reader, _ = db
+    reader.tables["scrna_clusters"] = [
+        {"id": i + 1, "dataset_id": 3, "cluster_id": cid, "name": name,
+         "source": None, "ordinal": i, "color": None}
+        for i, (cid, name) in enumerate(rows)
+    ]  # fmt: skip
+
+
+def test_a_cluster_id_picks_that_cluster_even_when_another_shares_its_name(
+    expression_db,
+):
+    _clusters(expression_db, ("0", "Phloem"), ("1", "Phloem"))
+    result = _run(cell_types=["0"])
+    assert ([c.cell for c in result.cells], result.cells_in_scope) == ([1], 2)
+
+
+def test_a_shared_name_picks_every_cluster_with_it(expression_db):
+    _clusters(expression_db, ("0", "Phloem"), ("1", "Phloem"))
+    assert [c.cell for c in _run(cell_types=["phloem"]).cells] == [1, 2, 3]
+
+
+def test_a_stored_name_with_spaces_still_matches(expression_db):
+    _clusters(expression_db, ("C", " Cortex "), ("X", None))
+    assert [c.cell for c in _run(cell_types=["Cortex"]).cells] == [1]
+
+
+def test_a_name_and_an_id_that_are_equal_pick_both_clusters(expression_db):
+    _clusters(expression_db, ("A", "B"), ("B", None))
+    assert [c.cell for c in _run(cell_types=["b"]).cells] == [1, 2, 3]
+
+
+def test_cells_with_no_cell_type_by_name(expression_db):
+    _values(expression_db, [0, 0, 0, 0, 7.0])
+    result = _run(cell_types=["no cell type"])
+    assert ([c.cell for c in result.cells], result.cells_in_scope) == ([4], 1)
+
+
 def test_an_unknown_cell_type_is_noted(expression_db):
     result = _run(cell_types=["X", "Phloem"])
     assert [c.cell for c in result.cells] == [2, 3]

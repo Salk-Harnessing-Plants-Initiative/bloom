@@ -16,6 +16,7 @@ from pydantic import (
 
 from bloom_mcp.contract import WithImages, as_mcp_tool
 from bloom_mcp.data_access import expression_counts, expression_stats, gene_reads
+from bloom_mcp.data_access import scrna_de_reads as de
 from bloom_mcp.data_access.page_links import umap_page
 from bloom_mcp.data_access.table_ports import Filter
 from bloom_mcp.tools import _ports
@@ -88,34 +89,41 @@ class GeneCellsParams(BaseModel):
 def _scope(
     cells: list[dict[str, Any]], clusters: list[dict[str, Any]], asked: list[str]
 ) -> tuple[list[str], set[int] | None, list[str]]:
-    """Each cell's cell type, the positions in scope (None: every cell), and notes."""
+    """Each cell's cell type, the positions in scope (None: every cell), and notes. A name
+    or cluster id picks each cluster it names, as the DE tool matches them."""
     types = expression_stats.cell_types(clusters)
     name_of = {t.ordinal: t.name for t in types}
     names = [
         name_of.get(c.get("cluster_ordinal"), expression_stats.NO_CELL_TYPE)
         for c in cells
     ]
-    wanted = [a.strip() for a in asked if a.strip()]
+    wanted = list(dict.fromkeys(a.strip() for a in asked if a.strip()))
     if not wanted:
         return names, None, []
-    keys: dict[str, str] = {
-        expression_stats.NO_CELL_TYPE.casefold(): expression_stats.NO_CELL_TYPE
-    }
-    for c in clusters:
-        shown = name_of[c["ordinal"]]
-        keys[str(c["cluster_id"]).casefold()] = shown
-        if c.get("name"):
-            keys[c["name"].casefold()] = shown
-    chosen = {keys[w.casefold()] for w in wanted if w.casefold() in keys}
-    unknown = [w for w in wanted if w.casefold() not in keys]
+    chosen: set[int] = set()
+    orphans = False
+    unknown = []
+    for w in wanted:
+        key = w.casefold()
+        found = {c["ordinal"] for c in clusters if de.is_named(c, key)}
+        chosen |= found
+        if key == expression_stats.NO_CELL_TYPE.casefold():
+            orphans = True
+        elif not found:
+            unknown.append(w)
     notes = []
     if unknown:
         note = f"No cell type named {', '.join(_cut(u)[0] for u in unknown)} in this dataset."
-        if not chosen:
+        if not chosen and not orphans:
             listed = ", ".join(_cut(t.name)[0] for t in types)
             note += f" Its cell types: {listed}."
         notes.append(note)
-    scope = {i for i, name in enumerate(names) if name in chosen}
+    scope = {
+        i
+        for i, c in enumerate(cells)
+        if c.get("cluster_ordinal") in chosen
+        or (orphans and c.get("cluster_ordinal") not in name_of)
+    }
     return names, scope, notes
 
 
