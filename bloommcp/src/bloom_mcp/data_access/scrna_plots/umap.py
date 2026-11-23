@@ -1,7 +1,7 @@
 """A dataset's UMAP coloured by one gene, drawn as the website's UMAP tab draws it
 (expression-umap.tsx, expression-lib/shaders.ts): dark ground, viridis from the gene's lowest
-to highest value over every cell, cells at zero under the expressing cells, and cells outside
-the named cell types first in faint grey."""
+to highest value over every cell, and cells at zero under the expressing cells. Cells outside
+the named cell types are drawn first in faint grey; the website hides them instead."""
 
 from __future__ import annotations
 
