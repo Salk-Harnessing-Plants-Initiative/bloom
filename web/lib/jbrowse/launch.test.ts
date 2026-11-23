@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { browserConfig } from "./config";
 import type { GenePlace } from "./gene-links";
-import { bloomTracks, launchPlan, launchTarget, picksToOpen } from "./launch";
+import { DEFAULT_SPAN_BP, bloomTracks, defaultViews, launchPlan, launchTarget, namesNothing, picksToOpen } from "./launch";
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -50,14 +50,34 @@ describe("launchPlan", () => {
   const loaded = {
     config: { assemblies: [{ name: "Outside.A" }, { name: "at.col0.v2" }], tracks: [] },
     bloomGenomes: ["at.col0.v2"],
+    bloomBuilds: { "at.col0.v2": 4 },
   };
 
   it("shows a Bloom genome's gene track", () => {
     expect(launchPlan({ assembly: "at.col0.v2", loc: "Chr1:1..9" }, loaded)).toEqual({
       assembly: "at.col0.v2",
       loc: "Chr1:1..9",
-      tracks: ["at.col0.v2-genes", "at.col0.v2-gene-density"],
+      tracks: ["at.col0.v2-genes"],
     });
+  });
+
+  const two = {
+    config: { assemblies: [{ name: "Outside.A" }, { name: "a.v1" }, { name: "b.v2" }], tracks: [] },
+    bloomGenomes: ["b.v2", "a.v1"],
+    bloomBuilds: { "b.v2": 3, "a.v1": 7 },
+  };
+
+  it("opens the most recently built Bloom genome version when the link names nothing", () => {
+    expect(launchPlan(null, two, true)).toEqual({ assembly: "a.v1", tracks: ["a.v1-genes"], firstRegion: true });
+  });
+
+  it("opens no default for a link it does not recognise", () => {
+    expect(launchPlan(null, two, false)).toBeNull();
+    expect(launchPlan(null, two)).toBeNull();
+  });
+
+  it("opens nothing when the link names nothing and Bloom offers no genome", () => {
+    expect(launchPlan(null, { ...loaded, bloomGenomes: [], bloomBuilds: {} }, true)).toBeNull();
   });
 
   it("adds no track for an outside assembly", () => {
@@ -66,7 +86,6 @@ describe("launchPlan", () => {
 
   it("opens nothing for an assembly the browser does not offer", () => {
     expect(launchPlan({ assembly: "at.col0.v9", loc: "Chr1:1..9" }, loaded)).toBeNull();
-    expect(launchPlan(null, loaded)).toBeNull();
   });
 });
 
@@ -94,9 +113,49 @@ describe("browserConfig", () => {
 });
 
 describe("bloomTracks", () => {
-  it("is a Bloom genome version's genes and gene density", () => {
-    expect(bloomTracks("at.col0.v2")).toEqual(["at.col0.v2-genes", "at.col0.v2-gene-density"]);
+  it("is a Bloom genome version's genes only; density waits to be ticked", () => {
+    expect(bloomTracks("at.col0.v2")).toEqual(["at.col0.v2-genes"]);
   });
+});
+
+describe("defaultViews", () => {
+  const views = (chr: string, length: number) => [
+    { loc: `${chr}:1..${length}`, tracks: ["a.v1-gene-density"] },
+    { loc: `${chr}:1..${Math.min(length, DEFAULT_SPAN_BP)}`, tracks: ["a.v1-sequence", "a.v1-genes"] },
+  ];
+
+  it("is the longest chromosome whole with density, then its first 50 kb with sequence and genes", () => {
+    expect(DEFAULT_SPAN_BP).toBe(50_000);
+    expect(defaultViews("a.v1", { ChrC: 154_478, Chr2: 19_698_289, Chr1: 30_427_671 })).toEqual(
+      views("Chr1", 30_427_671),
+    );
+  });
+
+  it("works for number-named chromosomes", () => {
+    expect(defaultViews("a.v1", { Pt: 154_478, "2": 19_698_289, "1": 30_427_671 })).toEqual(views("1", 30_427_671));
+  });
+
+  it("shows a short chromosome whole in both, and takes the first of equal ones", () => {
+    expect(defaultViews("a.v1", { ctgA: 40_000, ctgB: 40_000 })).toEqual(views("ctgA", 40_000));
+  });
+
+  it("is nothing for a genome with no chromosomes", () => {
+    expect(defaultViews("a.v1", {})).toBeUndefined();
+  });
+});
+
+describe("namesNothing", () => {
+  it("is true for a link with no browser parameter", () => {
+    expect(namesNothing(params(""))).toBe(true);
+    expect(namesNothing(params("utm_source=mail"))).toBe(true);
+  });
+
+  it.each(["genome=a.v1", "genome=", "reference=X", "gene=G", "genes=G1", "loc=Chr1:1..9", "missing=G"])(
+    "is false for %j",
+    (query) => {
+      expect(namesNothing(params(query))).toBe(false);
+    },
+  );
 });
 
 describe("picksToOpen", () => {

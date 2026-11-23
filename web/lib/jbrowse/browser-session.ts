@@ -37,6 +37,22 @@ export function searchScope(open: string[], picked: string | null, bloomBuilds: 
   return builds.length ? builds : Object.values(bloomBuilds);
 }
 
+/** The open genomes for the gene search: none (so every genome) while the only open view is the
+ * default one the page opened by itself. */
+export function searchedGenomes(open: string[], defaultGenome: string | null): string[] {
+  return open.length === 1 && open[0] === defaultGenome ? [] : open;
+}
+
+/** Adds a linear view of the genome per region, in order, each with its tracks. */
+export function openViews(session: BrowserSession, assembly: string, views: { loc: string; tracks: string[] }[]): void {
+  for (const { loc, tracks } of views) addView(session, { assembly, loc, tracks });
+}
+
+/** Adds an empty linear view, which asks for a genome and location. */
+export function openEmptyView(session: BrowserSession): void {
+  session.addView?.(LINEAR, {});
+}
+
 /** Matches grouped by genome version, in the order they came. */
 export function groupByGenome(places: GenePlace[]): { assembly: string; label: string; places: GenePlace[] }[] {
   const groups = new Map<string, { assembly: string; label: string; places: GenePlace[] }>();
@@ -48,9 +64,9 @@ export function groupByGenome(places: GenePlace[]): { assembly: string; label: s
   return [...groups.values()];
 }
 
-/** The linear view of a genome, including one still opening. */
+/** The latest linear view of a genome, including one still opening. */
 function viewOf(session: BrowserSession, assembly: string): SessionView | undefined {
-  return session.views.find(
+  return session.views.findLast(
     (v) => v.type === LINEAR && (v.assemblyNames?.[0] === assembly || v.init?.assembly === assembly),
   );
 }
