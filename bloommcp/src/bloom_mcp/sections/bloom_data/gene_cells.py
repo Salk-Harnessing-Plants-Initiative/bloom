@@ -187,7 +187,7 @@ def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult | WithImages:
         gene=params.gene,
         gene_name=gene["gene_name"] if gene else None,
         cells_in_scope=len(in_scope),
-        cells_expressing=None if params.gene is None else 0,
+        cells_expressing=None,
         offset=params.offset,
         returned=0,
         cells=[],

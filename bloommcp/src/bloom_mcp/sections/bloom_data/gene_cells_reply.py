@@ -30,7 +30,8 @@ class GeneCellsResult(BaseModel):
     gene_name: str | None = Field(description="The dataset's name for the gene.")
     cells_in_scope: int = Field(description="Cells of the cell types asked for (all).")
     cells_expressing: int | None = Field(
-        description="Of those, cells with a value above 0; None without a gene."
+        description="Of those, cells with a value above 0; None when no values were read "
+        "(no gene, or a note says why)."
     )
     offset: int
     returned: int = Field(description="Cells on this page.")

@@ -244,6 +244,7 @@ def test_a_symbol_with_two_genes_reads_the_first_and_names_the_other(expression_
 def test_a_gene_with_no_values_says_why(expression_db, gene, note):
     result = _run(gene=gene)
     assert result.cells == [] and note in result.notes
+    assert result.cells_expressing is None
 
 
 @pytest.mark.parametrize(
@@ -265,6 +266,7 @@ def test_a_counts_file_too_large_says_so(expression_db, monkeypatch):
     monkeypatch.setattr(expression_counts, "MAX_COUNTS_BYTES", 1)
     result = _run()
     assert result.cells == [] and any("MB" in n for n in result.notes)
+    assert result.cells_expressing is None
 
 
 @pytest.mark.parametrize("raw", [b'{"1": NaN}', b'{"1": Infinity}'])
@@ -273,6 +275,7 @@ def test_a_counts_file_with_non_finite_values_says_so(expression_db, raw):
     files.files[GENE_FILE] = raw
     result = _run()
     assert result.cells == [] and any("non-finite" in n for n in result.notes)
+    assert result.cells_expressing is None
 
 
 def test_out_of_time_before_the_counts_file(expression_db, monkeypatch):
@@ -280,6 +283,7 @@ def test_out_of_time_before_the_counts_file(expression_db, monkeypatch):
     monkeypatch.setattr(tool, "CALL_SECONDS", -1)
     result = _run()
     assert result.cells == [] and any("out of time" in n for n in result.notes)
+    assert result.cells_expressing is None
     assert not any(call[0] == "download" for call in files.calls)
 
 
