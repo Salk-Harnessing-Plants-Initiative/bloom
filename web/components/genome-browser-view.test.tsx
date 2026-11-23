@@ -20,7 +20,7 @@ vi.mock("@/lib/jbrowse/browser-session", async (importOriginal) => ({
   openPicks: (...args: unknown[]) => openPicks(...args),
 }));
 
-type BrowserProps = { onSession: (s: BrowserSession) => void; onChange: () => void };
+type BrowserProps = { onSession: (s: BrowserSession) => void; onChange: () => void; onDefaultOpened: (a: string) => void };
 let browser: BrowserProps;
 vi.mock("@/components/jbrowse-client", () => ({
   default: (props: BrowserProps) => {
@@ -135,5 +135,16 @@ describe("GenomeBrowserView", () => {
     await screen.findByText("G1 could not be shown: x");
     act(() => search!.onGoTo(gene));
     expect(screen.queryByText("G1 could not be shown: x")).toBeNull();
+  });
+
+  it("searches every genome while only the default view is open, then the open ones", () => {
+    act(() => {
+      browser.onDefaultOpened("a.v1");
+      browser.onSession(session(["a.v1"]));
+    });
+    expect(search?.openGenomes).toEqual([]);
+    const both = session(["a.v1", "b.v2"]);
+    act(() => browser.onSession(both));
+    expect(search?.openGenomes).toEqual(["a.v1", "b.v2"]);
   });
 });

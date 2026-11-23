@@ -12,20 +12,18 @@ let query = "";
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams(query) }));
 
 const evaluate = vi.fn();
+const addView = vi.fn();
+const waitForAssembly = vi.fn();
+const REGIONS = {
+  regions: [
+    { refName: "ChrC", start: 0, end: 154_478 },
+    { refName: "Chr1", start: 0, end: 30_427_671 },
+    { refName: "Chr2", start: 0, end: 19_698_289 },
+  ],
+};
 const createViewState = vi.fn((opts: { config: unknown }) => ({
   config: opts.config,
-  session: {
-    views: [],
-    id: Math.random(),
-    assemblyManager: {
-      waitForAssembly: async () => ({
-        regions: [
-          { refName: "Chr1", start: 0, end: 30_427_671 },
-          { refName: "Chr2", start: 0, end: 19_698_289 },
-        ],
-      }),
-    },
-  },
+  session: { views: [], id: Math.random(), addView, assemblyManager: { waitForAssembly } },
   pluginManager: { evaluateAsyncExtensionPoint: evaluate },
 }));
 vi.mock("@jbrowse/react-app2", () => ({
@@ -41,6 +39,10 @@ vi.mock("@/lib/jbrowse/browser-session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/jbrowse/browser-session")>()),
   openPicks: (...args: unknown[]) => openPicks(...args),
 }));
+const DEFAULT_VIEWS = [
+  ["LinearGenomeView", { init: { assembly: "a.v1", loc: "Chr1:1..30427671", tracks: ["a.v1-gene-density"] } }],
+  ["LinearGenomeView", { init: { assembly: "a.v1", loc: "Chr1:1..50000", tracks: ["a.v1-sequence", "a.v1-genes"] } }],
+];
 
 import JBrowse from "./jbrowse";
 
@@ -59,7 +61,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   query = "";
   evaluate.mockResolvedValue(undefined);
+  waitForAssembly.mockResolvedValue(REGIONS);
   openPicks.mockResolvedValue(undefined);
+  vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -91,17 +95,72 @@ describe("JBrowse", () => {
       session: made()[0].session,
     });
     expect(openPicks).not.toHaveBeenCalled();
+    expect(window.history.replaceState).not.toHaveBeenCalled();
   });
 
-  it("opens the newest Bloom genome on its first chromosome's first 1 Mb when the link names nothing", async () => {
+  it("opens the most recently built genome as two views of its longest chromosome when the link names nothing", async () => {
+    const onDefaultOpened = vi.fn();
+    render(<JBrowse loaded={loadedWith()} picks={null} onDefaultOpened={onDefaultOpened} />);
+    await waitFor(() => expect(onDefaultOpened).toHaveBeenCalledWith("a.v1"));
+    expect(addView.mock.calls).toEqual(DEFAULT_VIEWS);
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(window.history.replaceState).toHaveBeenCalledWith(null, "", "/app/jbrowse?genome=a.v1&loc=Chr1%3A1..50000");
+  });
+
+  it("opens the default view before handing the session to the gene search", async () => {
+    let regionsRead!: (r: unknown) => void;
+    waitForAssembly.mockReturnValue(new Promise((resolve) => (regionsRead = resolve)));
+    const onSession = vi.fn();
+    render(<JBrowse loaded={loadedWith()} picks={null} onSession={onSession} />);
+    await waitFor(() => expect(waitForAssembly).toHaveBeenCalled());
+    expect(onSession).not.toHaveBeenCalled();
+    regionsRead(REGIONS);
+    await waitFor(() => expect(onSession).toHaveBeenCalled());
+    expect(addView).toHaveBeenCalledTimes(2);
+    expect(addView.mock.invocationCallOrder[1]).toBeLessThan(onSession.mock.invocationCallOrder[0]);
+  });
+
+  it("names the default genome and opens an empty view when its chromosomes cannot be read", async () => {
+    waitForAssembly.mockResolvedValue(undefined);
     render(<JBrowse loaded={loadedWith()} picks={null} />);
-    await waitFor(() => expect(evaluate).toHaveBeenCalled());
-    expect(evaluate).toHaveBeenCalledWith("LaunchView-LinearGenomeView", {
-      tracks: TRACKS,
-      loc: "Chr1:1..1000000",
-      assembly: "a.v1",
-      session: made()[0].session,
-    });
+    expect(await screen.findByText("a.v1 could not be opened: its chromosomes could not be read.")).toBeTruthy();
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(addView).toHaveBeenCalledWith("LinearGenomeView", {});
+    expect(window.history.replaceState).not.toHaveBeenCalled();
+  });
+
+  it("names the default genome when reading its chromosomes fails", async () => {
+    waitForAssembly.mockRejectedValue(new Error("boom"));
+    render(<JBrowse loaded={loadedWith()} picks={null} />);
+    expect(await screen.findByText("a.v1 could not be opened: boom")).toBeTruthy();
+    expect(addView).toHaveBeenCalledWith("LinearGenomeView", {});
+  });
+
+  it("opens nothing once unmounted while the chromosomes are read", async () => {
+    let regionsRead!: (r: unknown) => void;
+    waitForAssembly.mockReturnValue(new Promise((resolve) => (regionsRead = resolve)));
+    const { unmount } = render(<JBrowse loaded={loadedWith()} picks={null} />);
+    await waitFor(() => expect(waitForAssembly).toHaveBeenCalled());
+    unmount();
+    regionsRead(REGIONS);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(addView).not.toHaveBeenCalled();
+  });
+
+  it.each(["genes=G1", "reference=Outside.A", "loc=Chr1:1..9"])(
+    "opens an empty linear view, not the default, for the unrecognised link %j",
+    async (link) => {
+      query = link;
+      render(<JBrowse loaded={loadedWith()} picks={null} />);
+      await waitFor(() => expect(addView).toHaveBeenCalledWith("LinearGenomeView", {}));
+      expect(evaluate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("opens an empty linear view when Bloom offers no genome", async () => {
+    render(<JBrowse loaded={{ ...loadedWith(), bloomGenomes: [], bloomBuilds: {} }} picks={null} />);
+    await waitFor(() => expect(addView).toHaveBeenCalledWith("LinearGenomeView", {}));
+    expect(evaluate).not.toHaveBeenCalled();
   });
 
   it("opens placed picks through the session instead", async () => {

@@ -63,6 +63,11 @@ export function assemblyName(genome: string, version: number): string {
   return `${genome}.v${version}`;
 }
 
+/** The reference sequence track's ID for a genome version's assembly. */
+export function sequenceTrackId(assembly: string): string {
+  return `${assembly}-sequence`;
+}
+
 /** The gene track's ID for a genome version's assembly. */
 export function geneTrackId(assembly: string): string {
   return `${assembly}-genes`;
@@ -87,7 +92,7 @@ export function bloomGenomeConfig(g: BloomGenome) {
       refNameColors: CONTIG_COLOURS,
       sequence: {
         type: "ReferenceSequenceTrack",
-        trackId: `${name}-sequence`,
+        trackId: sequenceTrackId(name),
         adapter: {
           type: "BgzipFastaAdapter",
           fastaLocation: location(g.buildId, "fasta"),

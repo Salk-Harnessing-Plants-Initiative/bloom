@@ -6,6 +6,7 @@ import {
   browserLink,
   datasetGenome,
   geneInGenomeLink,
+  genomeLink,
   isRegion,
   orthobrowserLink,
   placeGeneEverywhere,
@@ -48,6 +49,10 @@ const place: GenePlace = {
 };
 
 describe("links", () => {
+  it("opens the browser on a genome version at a region", () => {
+    expect(genomeLink("a.v1", "Chr1:1..1000000")).toBe("/app/jbrowse?genome=a.v1&loc=Chr1%3A1..1000000");
+  });
+
   it("opens the browser on the gene's genome version at its span", () => {
     expect(browserLink(place)).toBe("/app/jbrowse?genome=athaliana_col0.v2&loc=Chr1%3A3631..5899");
   });

@@ -3,8 +3,8 @@
 /** The window genes are counted in, bp. */
 export const DENSITY_WINDOW_BP = 100_000;
 
-/** Tailwind lime-300, the density bars' colour: light, so the axis reads over it. */
-const DENSITY_COLOUR = "#bef264";
+/** Tailwind lime-600, the density bars' colour: about 3:1 on white, lighter than the axis text. */
+const DENSITY_COLOUR = "#65a30d";
 
 /** A gene's contig and 1-based start. */
 export interface GeneStart {

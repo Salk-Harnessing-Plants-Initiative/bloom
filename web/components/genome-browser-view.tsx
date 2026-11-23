@@ -6,7 +6,7 @@ import { useCallback, useRef, useState } from "react";
 import { GenomeGeneSearch } from "@/components/genome-gene-search";
 import JBrowseClient from "@/components/jbrowse-client";
 import type { LoadedBrowserConfig } from "@/lib/jbrowse/bloom-genomes";
-import { goToGene, openAssemblies, openPicks, type BrowserSession } from "@/lib/jbrowse/browser-session";
+import { goToGene, openAssemblies, openPicks, searchedGenomes, type BrowserSession } from "@/lib/jbrowse/browser-session";
 import { browserLink, type GenePlace } from "@/lib/jbrowse/gene-links";
 import { bloomTracks } from "@/lib/jbrowse/launch";
 import { picksLink, type PicksPlan } from "@/lib/jbrowse/several-genes";
@@ -19,6 +19,7 @@ export function GenomeBrowserView({ loaded, picks }: { loaded: LoadedBrowserConf
   const session = useRef<BrowserSession | null>(null);
   const [openGenomes, setOpenGenomes] = useState<string[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
+  const [defaultGenome, setDefaultGenome] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     const next = openAssemblies(session.current);
@@ -69,13 +70,19 @@ export function GenomeBrowserView({ loaded, picks }: { loaded: LoadedBrowserConf
       {loaded.bloomGenomes.length > 0 && (
         <GenomeGeneSearch
           bloomBuilds={loaded.bloomBuilds}
-          openGenomes={openGenomes}
+          openGenomes={searchedGenomes(openGenomes, defaultGenome)}
           onGoTo={onGoTo}
           onOpenTogether={onOpenTogether}
         />
       )}
       {problem && <p className="px-4 text-sm text-red-700">{problem}</p>}
-      <JBrowseClient loaded={loaded} picks={picks} onSession={onSession} onChange={refresh} />
+      <JBrowseClient
+        loaded={loaded}
+        picks={picks}
+        onSession={onSession}
+        onChange={refresh}
+        onDefaultOpened={setDefaultGenome}
+      />
     </>
   );
 }

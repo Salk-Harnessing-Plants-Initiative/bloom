@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { browserConfig } from "./config";
 import type { GenePlace } from "./gene-links";
-import { DEFAULT_SPAN_BP, bloomTracks, firstRegion, launchPlan, launchTarget, picksToOpen } from "./launch";
+import { DEFAULT_SPAN_BP, bloomTracks, defaultViews, launchPlan, launchTarget, namesNothing, picksToOpen } from "./launch";
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -61,17 +61,23 @@ describe("launchPlan", () => {
     });
   });
 
-  it("opens the newest Bloom genome version at its first chromosome when nothing is named", () => {
-    const two = {
-      config: { assemblies: [{ name: "Outside.A" }, { name: "a.v1" }, { name: "b.v2" }], tracks: [] },
-      bloomGenomes: ["b.v2", "a.v1"],
-      bloomBuilds: { "b.v2": 3, "a.v1": 7 },
-    };
-    expect(launchPlan(null, two)).toEqual({ assembly: "a.v1", tracks: ["a.v1-genes"], firstRegion: true });
+  const two = {
+    config: { assemblies: [{ name: "Outside.A" }, { name: "a.v1" }, { name: "b.v2" }], tracks: [] },
+    bloomGenomes: ["b.v2", "a.v1"],
+    bloomBuilds: { "b.v2": 3, "a.v1": 7 },
+  };
+
+  it("opens the most recently built Bloom genome version when the link names nothing", () => {
+    expect(launchPlan(null, two, true)).toEqual({ assembly: "a.v1", tracks: ["a.v1-genes"], firstRegion: true });
   });
 
-  it("opens nothing when nothing is named and Bloom offers no genome", () => {
-    expect(launchPlan(null, { ...loaded, bloomGenomes: [], bloomBuilds: {} })).toBeNull();
+  it("opens no default for a link it does not recognise", () => {
+    expect(launchPlan(null, two, false)).toBeNull();
+    expect(launchPlan(null, two)).toBeNull();
+  });
+
+  it("opens nothing when the link names nothing and Bloom offers no genome", () => {
+    expect(launchPlan(null, { ...loaded, bloomGenomes: [], bloomBuilds: {} }, true)).toBeNull();
   });
 
   it("adds no track for an outside assembly", () => {
@@ -112,19 +118,44 @@ describe("bloomTracks", () => {
   });
 });
 
-describe("firstRegion", () => {
-  it("is the first 1 Mb of the genome's first chromosome", () => {
-    expect(DEFAULT_SPAN_BP).toBe(1_000_000);
-    expect(firstRegion({ Chr1: 30_427_671, Chr2: 19_698_289 })).toBe("Chr1:1..1000000");
+describe("defaultViews", () => {
+  const views = (chr: string, length: number) => [
+    { loc: `${chr}:1..${length}`, tracks: ["a.v1-gene-density"] },
+    { loc: `${chr}:1..${Math.min(length, DEFAULT_SPAN_BP)}`, tracks: ["a.v1-sequence", "a.v1-genes"] },
+  ];
+
+  it("is the longest chromosome whole with density, then its first 50 kb with sequence and genes", () => {
+    expect(DEFAULT_SPAN_BP).toBe(50_000);
+    expect(defaultViews("a.v1", { ChrC: 154_478, Chr2: 19_698_289, Chr1: 30_427_671 })).toEqual(
+      views("Chr1", 30_427_671),
+    );
   });
 
-  it("is the whole chromosome when it is shorter", () => {
-    expect(firstRegion({ ChrC: 154_478, Chr1: 30_427_671 })).toBe("ChrC:1..154478");
+  it("works for number-named chromosomes", () => {
+    expect(defaultViews("a.v1", { Pt: 154_478, "2": 19_698_289, "1": 30_427_671 })).toEqual(views("1", 30_427_671));
+  });
+
+  it("shows a short chromosome whole in both, and takes the first of equal ones", () => {
+    expect(defaultViews("a.v1", { ctgA: 40_000, ctgB: 40_000 })).toEqual(views("ctgA", 40_000));
   });
 
   it("is nothing for a genome with no chromosomes", () => {
-    expect(firstRegion({})).toBeUndefined();
+    expect(defaultViews("a.v1", {})).toBeUndefined();
   });
+});
+
+describe("namesNothing", () => {
+  it("is true for a link with no browser parameter", () => {
+    expect(namesNothing(params(""))).toBe(true);
+    expect(namesNothing(params("utm_source=mail"))).toBe(true);
+  });
+
+  it.each(["genome=a.v1", "genome=", "reference=X", "gene=G", "genes=G1", "loc=Chr1:1..9", "missing=G"])(
+    "is false for %j",
+    (query) => {
+      expect(namesNothing(params(query))).toBe(false);
+    },
+  );
 });
 
 describe("picksToOpen", () => {

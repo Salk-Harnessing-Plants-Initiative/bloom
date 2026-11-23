@@ -1,7 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { GenePlace } from "./gene-links";
-import { contigLengths, goToGene, groupByGenome, openAssemblies, openPicks, searchScope } from "./browser-session";
+import {
+  contigLengths,
+  goToGene,
+  groupByGenome,
+  openAssemblies,
+  openEmptyView,
+  openPicks,
+  openViews,
+  searchedGenomes,
+  searchScope,
+} from "./browser-session";
 import { picksView } from "./several-genes";
 
 const view = (type: string, assemblyNames: string[], init?: { assembly: string }) => ({
@@ -82,6 +92,15 @@ describe("goToGene", () => {
     expect(session.addView).not.toHaveBeenCalled();
   });
 
+  it("moves the latest view when a genome has two, leaving the one above", async () => {
+    const whole = view("LinearGenomeView", ["b.v2"]);
+    const region = view("LinearGenomeView", ["b.v2"]);
+    const session = { views: [whole, region], addView: vi.fn() };
+    await goToGene(session, place("AT1G01010", "b.v2"), TRACKS);
+    expect(region.navToLocString).toHaveBeenCalledWith("Chr1:3631..5899", "b.v2");
+    expect(whole.navToLocString).not.toHaveBeenCalled();
+  });
+
   it("opens a view of the genome, with the given tracks shown, when none is open", async () => {
     const session = { views: [view("LinearGenomeView", ["a.v1"])], addView: vi.fn() };
     await goToGene(session, place("AT1G01010", "b.v2"), TRACKS);
@@ -159,5 +178,45 @@ describe("openPicks", () => {
     expect(session.addView).toHaveBeenCalledWith("LinearGenomeView", {
       init: { assembly: "b.v2", loc, highlight, tracks: TRACKS },
     });
+  });
+});
+
+describe("searchedGenomes", () => {
+  it("searches every genome while only the default view is open", () => {
+    expect(searchedGenomes(["a.v1"], "a.v1")).toEqual([]);
+  });
+
+  it("searches the open genomes once the member opens another, or with no default", () => {
+    expect(searchedGenomes(["a.v1", "b.v2"], "a.v1")).toEqual(["a.v1", "b.v2"]);
+    expect(searchedGenomes(["b.v2"], "a.v1")).toEqual(["b.v2"]);
+    expect(searchedGenomes(["a.v1"], null)).toEqual(["a.v1"]);
+  });
+});
+
+describe("openViews", () => {
+  it("adds each view in order, with its region and tracks", () => {
+    const addView = vi.fn();
+    openViews({ views: [], addView }, "a.v1", [
+      { loc: "Chr1:1..30427671", tracks: ["a.v1-gene-density"] },
+      { loc: "Chr1:1..50000", tracks: ["a.v1-sequence", "a.v1-genes"] },
+    ]);
+    expect(addView.mock.calls).toEqual([
+      ["LinearGenomeView", { init: { assembly: "a.v1", loc: "Chr1:1..30427671", tracks: ["a.v1-gene-density"] } }],
+      ["LinearGenomeView", { init: { assembly: "a.v1", loc: "Chr1:1..50000", tracks: ["a.v1-sequence", "a.v1-genes"] } }],
+    ]);
+  });
+
+  it("fails when the browser cannot add a view", () => {
+    expect(() => openViews({ views: [] }, "a.v1", [{ loc: "Chr1:1..9", tracks: [] }])).toThrow(
+      "The browser could not open a.v1.",
+    );
+  });
+});
+
+describe("openEmptyView", () => {
+  it("adds a linear view that asks for a genome and location", () => {
+    const addView = vi.fn();
+    openEmptyView({ views: [], addView });
+    expect(addView).toHaveBeenCalledWith("LinearGenomeView", {});
   });
 });
