@@ -66,22 +66,28 @@ export function bloomTracks(assembly: string): string[] {
   return [geneTrackId(assembly)];
 }
 
-/** The default views of a genome's longest chromosome (the first of equal ones, so an organelle
- * listed first is passed over): the whole chromosome with gene density, then its first
- * `DEFAULT_SPAN_BP` with the reference sequence and genes. */
-export function defaultViews(assembly: string, contigLengths: Record<string, number>): ViewToOpen[] | undefined {
-  const longest = Object.entries(contigLengths).reduce<[string, number] | undefined>(
+/** A genome's longest chromosome and its length (the first of equal ones, so an organelle listed
+ * first is passed over); none when the chromosomes are unknown. */
+export function longestChromosome(contigLengths: Record<string, number>): [string, number] | undefined {
+  return Object.entries(contigLengths).reduce<[string, number] | undefined>(
     (best, entry) => (!best || entry[1] > best[1] ? entry : best),
     undefined,
   );
+}
+
+/** A chromosome's first `DEFAULT_SPAN_BP`, or all of a shorter one. */
+export function geneSpan([chromosome, length]: [string, number]): string {
+  return `${chromosome}:1..${Math.min(length, DEFAULT_SPAN_BP)}`;
+}
+
+/** The default views of a Bloom genome's longest chromosome: the whole chromosome with gene
+ * density, then its first `DEFAULT_SPAN_BP` with the reference sequence and genes. */
+export function defaultViews(assembly: string, contigLengths: Record<string, number>): ViewToOpen[] | undefined {
+  const longest = longestChromosome(contigLengths);
   if (!longest) return undefined;
-  const [chromosome, length] = longest;
   return [
-    { loc: `${chromosome}:1..${length}`, tracks: [densityTrackId(assembly)] },
-    {
-      loc: `${chromosome}:1..${Math.min(length, DEFAULT_SPAN_BP)}`,
-      tracks: [sequenceTrackId(assembly), geneTrackId(assembly)],
-    },
+    { loc: `${longest[0]}:1..${longest[1]}`, tracks: [densityTrackId(assembly)] },
+    { loc: geneSpan(longest), tracks: [sequenceTrackId(assembly), geneTrackId(assembly)] },
   ];
 }
 

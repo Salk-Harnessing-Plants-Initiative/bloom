@@ -35,6 +35,14 @@ type SearchProps = {
   onOpenTogether: (a: string, p: GenePlace[]) => Promise<void>;
 };
 let search: SearchProps | undefined;
+type PickerProps = { value: string; disabled?: boolean; onChoose: (name: string) => void; choices: unknown };
+let picker: PickerProps | undefined;
+vi.mock("@/components/genome-picker", () => ({
+  GenomePicker: (props: PickerProps) => {
+    picker = props;
+    return null;
+  },
+}));
 vi.mock("@/components/genome-gene-search", () => ({
   GenomeGeneSearch: (props: SearchProps) => {
     search = props;
@@ -146,5 +154,52 @@ describe("GenomeBrowserView", () => {
     const both = session(["a.v1", "b.v2"]);
     act(() => browser.onSession(both));
     expect(search?.openGenomes).toEqual(["a.v1", "b.v2"]);
+  });
+
+  describe("the genome selector", () => {
+    const REGIONS = { regions: [{ refName: "Chr1", start: 0, end: 30_427_671 }] };
+    const choosing = (regions: unknown = REGIONS) => {
+      const old = { type: "LinearGenomeView", assemblyNames: ["b.v2"] };
+      const s = {
+        views: [old],
+        addView: vi.fn(),
+        removeView: vi.fn(),
+        assemblyManager: { waitForAssembly: vi.fn(async () => regions) },
+      } as unknown as BrowserSession & { addView: ReturnType<typeof vi.fn>; removeView: ReturnType<typeof vi.fn> };
+      act(() => browser.onSession(s));
+      return { s, old };
+    };
+
+    it("is off until JBrowse is ready, then follows the one open genome", () => {
+      expect(picker?.disabled).toBe(true);
+      act(() => browser.onSession(session(["a.v1"])));
+      expect(picker?.disabled).toBe(false);
+      expect(picker?.value).toBe("a.v1");
+      act(() => browser.onSession(session(["a.v1", "b.v2"])));
+      expect(picker?.value).toBe("");
+    });
+
+    it("replaces the views with a chosen Bloom genome's views, narrows the search and records the address", async () => {
+      vi.spyOn(window.history, "replaceState").mockImplementation(() => {});
+      act(() => browser.onDefaultOpened("a.v1"));
+      const { s, old } = choosing();
+      await act(async () => picker!.onChoose("a.v1"));
+      expect(s.removeView).toHaveBeenCalledWith(old);
+      expect(s.addView.mock.calls).toEqual([
+        ["LinearGenomeView", { init: { assembly: "a.v1", loc: "Chr1:1..30427671", tracks: ["a.v1-gene-density"] } }],
+        ["LinearGenomeView", { init: { assembly: "a.v1", loc: "Chr1:1..50000", tracks: ["a.v1-sequence", "a.v1-genes"] } }],
+      ]);
+      expect(window.history.replaceState).toHaveBeenCalledWith(null, "", "/app/jbrowse?genome=a.v1&loc=Chr1%3A1..50000");
+      act(() => browser.onSession({ views: [{ type: "LinearGenomeView", assemblyNames: ["a.v1"] }] }));
+      expect(search?.openGenomes).toEqual(["a.v1"]);
+    });
+
+    it("names a chosen genome whose chromosomes cannot be read, keeping the views", async () => {
+      const { s } = choosing({ regions: [] });
+      await act(async () => picker!.onChoose("a.v1"));
+      expect(screen.getByText("a.v1 could not be opened: its chromosomes could not be read.")).toBeTruthy();
+      expect(s.removeView).not.toHaveBeenCalled();
+      expect(s.addView).not.toHaveBeenCalled();
+    });
   });
 });

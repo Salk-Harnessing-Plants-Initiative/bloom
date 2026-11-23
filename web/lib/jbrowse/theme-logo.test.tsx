@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-/** Bloom's header logo against JBrowse's own logo and theme, so a JBrowse upgrade that changes
- * either is caught here. */
+/** The browser's header shows no logo: Bloom's page already carries one. Checked against
+ * JBrowse's own logo and theme, so a JBrowse upgrade that changes either is caught here. */
 
 import AppLogo from "@jbrowse/core/ui/AppLogo";
 import { createJBrowseTheme } from "@jbrowse/core/ui/theme";
@@ -11,8 +11,8 @@ import { BLOOM_LOGO, BLOOM_THEME, LOGO_SELECTOR } from "./theme";
 
 afterEach(cleanup);
 
-describe("Bloom's header logo", () => {
-  it("is the image JBrowse draws for a custom logo", () => {
+describe("the header logo", () => {
+  it("is set, so JBrowse draws the image the theme hides instead of its own logo", () => {
     const session = { configuration: { logoPath: BLOOM_LOGO } };
     const { container } = render(<AppLogo session={session as never} />);
     const logo = container.querySelector("img");
@@ -20,14 +20,10 @@ describe("Bloom's header logo", () => {
     expect(logo?.matches(LOGO_SELECTOR)).toBe(true);
   });
 
-  it("keeps its height cap once JBrowse builds the theme", () => {
+  it("stays hidden once JBrowse builds the theme", () => {
     const theme = createJBrowseTheme(BLOOM_THEME) as unknown as {
       components: { MuiAppBar: { styleOverrides: { root: Record<string, unknown> } } };
     };
-    expect(theme.components.MuiAppBar.styleOverrides.root[`& ${LOGO_SELECTOR}`]).toEqual({
-      display: "block",
-      height: 40,
-      width: "auto",
-    });
+    expect(theme.components.MuiAppBar.styleOverrides.root[`& ${LOGO_SELECTOR}`]).toEqual({ display: "none" });
   });
 });
