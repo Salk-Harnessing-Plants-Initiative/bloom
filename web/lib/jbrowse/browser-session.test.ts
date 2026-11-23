@@ -9,6 +9,7 @@ import {
   openEmptyView,
   openPicks,
   openViews,
+  replaceViews,
   searchedGenomes,
   searchScope,
 } from "./browser-session";
@@ -210,6 +211,27 @@ describe("openViews", () => {
     expect(() => openViews({ views: [] }, "a.v1", [{ loc: "Chr1:1..9", tracks: [] }])).toThrow(
       "The browser could not open a.v1.",
     );
+  });
+});
+
+describe("replaceViews", () => {
+  it("closes every open view, then adds the genome's views", () => {
+    const old = [view("LinearGenomeView", ["a.v1"]), view("LinearGenomeView", ["b.v2"])];
+    const session = { views: [...old], addView: vi.fn(), removeView: vi.fn() };
+    replaceViews(session, "c.v1", [{ loc: "Chr1:1..9", tracks: ["c.v1-genes"] }]);
+    expect(session.removeView.mock.calls).toEqual([[old[0]], [old[1]]]);
+    expect(session.addView).toHaveBeenCalledWith("LinearGenomeView", {
+      init: { assembly: "c.v1", loc: "Chr1:1..9", tracks: ["c.v1-genes"] },
+    });
+    expect(session.removeView.mock.invocationCallOrder[1]).toBeLessThan(session.addView.mock.invocationCallOrder[0]);
+  });
+
+  it("fails, closing nothing, when the browser cannot close views", () => {
+    const session = { views: [view("LinearGenomeView", ["a.v1"])], addView: vi.fn() };
+    expect(() => replaceViews(session, "c.v1", [{ loc: "Chr1:1..9", tracks: [] }])).toThrow(
+      "The browser could not open c.v1.",
+    );
+    expect(session.addView).not.toHaveBeenCalled();
   });
 });
 

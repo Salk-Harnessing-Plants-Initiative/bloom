@@ -17,6 +17,7 @@ export interface SessionView {
 export interface BrowserSession {
   views: SessionView[];
   addView?: (type: string, snapshot: unknown) => unknown;
+  removeView?: (view: SessionView) => void;
   assemblyManager?: {
     waitForAssembly: (name: string) => Promise<{ regions?: { refName: string; end: number }[] } | undefined>;
   };
@@ -46,6 +47,14 @@ export function searchedGenomes(open: string[], defaultGenome: string | null): s
 /** Adds a linear view of the genome per region, in order, each with its tracks. */
 export function openViews(session: BrowserSession, assembly: string, views: { loc: string; tracks: string[] }[]): void {
   for (const { loc, tracks } of views) addView(session, { assembly, loc, tracks });
+}
+
+/** Closes every open view, then adds the genome's views. */
+export function replaceViews(session: BrowserSession, assembly: string, views: { loc: string; tracks: string[] }[]): void {
+  const { removeView } = session;
+  if (!removeView || !session.addView) throw new Error(`The browser could not open ${assembly}.`);
+  for (const view of [...session.views]) removeView(view);
+  openViews(session, assembly, views);
 }
 
 /** Adds an empty linear view, which asks for a genome and location. */

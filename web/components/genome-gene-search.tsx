@@ -94,7 +94,7 @@ export function GenomeGeneSearch({ bloomBuilds, openGenomes, onGoTo, onOpenToget
   };
 
   return (
-    <div className="px-4 text-sm">
+    <div className="text-sm">
       <input
         type="search"
         value={text}

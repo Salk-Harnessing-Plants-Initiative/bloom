@@ -24,15 +24,15 @@ export const BLOOM_THEME = {
           color: "#3f6212",
           boxShadow: "none",
           borderBottom: "1px solid #e7e5e4",
-          // Keeps the logo inside JBrowse's 48 px-high logo slot.
-          [`& ${LOGO_SELECTOR}`]: { display: "block", height: 40, width: "auto" },
+          // No logo in the browser's header; Bloom's page already shows one.
+          [`& ${LOGO_SELECTOR}`]: { display: "none" },
         },
       },
     },
   },
 };
 
-/** Bloom's mark in the header, in place of JBrowse's white logo, which a pale bar would hide. */
+/** A custom logo, which the theme hides, so JBrowse doesn't draw its own white one instead. */
 export const BLOOM_LOGO = { uri: "/logo-mark.png", locationType: "UriLocation" };
 
 /** How genes are drawn: lime-700 exons, stone-500 introns, lime-300 UTRs. */
