@@ -9,7 +9,6 @@ from __future__ import annotations
 import io
 import logging
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -17,13 +16,14 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
 
+from bloom_mcp.data_access import image_slots
+
 logger = logging.getLogger(__name__)
 
 WIDTH, HEIGHT, DPI = 1200, 900, 100
 MAX_PNG_BYTES = 1_500_000
 # Drawing a large UMAP holds the CPU for about a second, so few run at once.
 MAX_DRAWINGS = 2
-SLOT_WAIT_SECONDS = 15
 _slots = threading.BoundedSemaphore(MAX_DRAWINGS)
 
 BUSY = "No plot: other plots were being drawn. Ask again."
@@ -54,19 +54,16 @@ def _render(fig: Figure) -> bytes:
 
 
 def draw(build: Callable[[], Figure], deadline: float) -> Drawn:
-    """`build`'s figure as PNG bytes, or the reason there is none."""
-    left = deadline - time.monotonic()
-    if left <= 0:
-        return Drawn(None, OUT_OF_TIME)
-    if not _slots.acquire(timeout=min(SLOT_WAIT_SECONDS, left)):
-        return Drawn(None, BUSY)
+    """`build`'s figure as PNG bytes, or the reason there is none. A slot is waited for
+    as long as image_slots allows, never past `deadline`."""
     try:
-        png = _render(build())
+        with image_slots.slot(_slots, deadline):
+            png = _render(build())
+    except image_slots.NoSlot as no:
+        return Drawn(None, OUT_OF_TIME if no.reason == "time" else BUSY)
     except Exception as exc:  # noqa: BLE001 — logged by type; the numbers still return
         logger.warning("scRNA plot failed: %s", type(exc).__name__)
         return Drawn(None, FAILED)
-    finally:
-        _slots.release()
     if len(png) > MAX_PNG_BYTES:
         return Drawn(None, TOO_LARGE)
     return Drawn(png, None)

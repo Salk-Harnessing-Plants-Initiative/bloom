@@ -13,6 +13,7 @@ import pytest
 from matplotlib.figure import Figure
 from PIL import Image
 
+from bloom_mcp.data_access import image_slots
 from bloom_mcp.data_access.scrna_plots import _png
 
 
@@ -81,7 +82,7 @@ def test_no_time_left_draws_nothing():
 def test_a_third_drawing_waits_then_is_busy(monkeypatch):
     slots = threading.BoundedSemaphore(2)
     monkeypatch.setattr(_png, "_slots", slots)
-    monkeypatch.setattr(_png, "SLOT_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(image_slots, "SLOT_WAIT_SECONDS", 0.05)
     slots.acquire()
     slots.acquire()
     try:
@@ -90,6 +91,17 @@ def test_a_third_drawing_waits_then_is_busy(monkeypatch):
         slots.release()
         slots.release()
     assert (drawn.png, drawn.reason) == (None, _png.BUSY)
+
+
+def test_running_out_of_time_while_waiting_is_out_of_time_not_busy(monkeypatch):
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(_png, "_slots", slots)
+    slots.acquire()
+    try:
+        drawn = _png.draw(_figure, _later(0.05))
+    finally:
+        slots.release()
+    assert (drawn.png, drawn.reason) == (None, _png.OUT_OF_TIME)
 
 
 def test_a_slot_is_freed_after_an_error(monkeypatch):
@@ -116,7 +128,7 @@ def test_drawings_in_threads_match_one_at_a_time():
 
 def test_limits_are_as_documented():
     assert (_png.WIDTH, _png.HEIGHT, _png.MAX_PNG_BYTES) == (1200, 900, 1_500_000)
-    assert (_png.MAX_DRAWINGS, _png.SLOT_WAIT_SECONDS) == (2, 15)
+    assert (_png.MAX_DRAWINGS, image_slots.SLOT_WAIT_SECONDS) == (2, 15)
 
 
 @pytest.mark.parametrize("side", [_png.WIDTH, _png.HEIGHT])
