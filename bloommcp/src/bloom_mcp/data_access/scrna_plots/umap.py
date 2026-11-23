@@ -98,9 +98,11 @@ def gene_figure(
     names: list[str],
     focus: np.ndarray | None,
     title: str,
+    *,
+    units: str,
 ) -> Figure:
-    """The UMAP coloured by `values`; `codes` index `names` (-1: no cell type); `focus`
-    marks the cells of the named cell types (None: every cell)."""
+    """The UMAP coloured by `values`, in `units`; `codes` index `names` (-1: no cell type);
+    `focus` marks the cells of the named cell types (None: every cell)."""
     fig, ax = _axes(title)
     low, high = float(values.min()), float(values.max())
     norm = Normalize(low, high if high > low else low + 1e-6, clip=True)
@@ -112,6 +114,7 @@ def gene_figure(
         _points(ax, x[part], y[part], VIRIDIS(norm(values[part])), gid)
     bar = fig.colorbar(ScalarMappable(norm, VIRIDIS), ax=ax, fraction=0.03)
     bar.ax.tick_params(colors=TEXT)
+    bar.set_label(units, color=TEXT)
     bar.outline.set_visible(False)
     _labels(ax, x, y, codes, names, focus)
     return fig

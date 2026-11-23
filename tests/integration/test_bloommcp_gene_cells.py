@@ -179,6 +179,7 @@ def test_each_row_carries_its_own_cells_values(results):
         (3, 1.0, "X", "Col-0", "rep4", 3.0, -3.0),
     ]
     assert (result["cells_in_scope"], result["cells_expressing"]) == (6, 4)
+    assert result["units"] == "log-normalized"
     assert results["plain"]["images"] == []
 
 

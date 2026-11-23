@@ -28,6 +28,7 @@ class GeneCellsResult(BaseModel):
     dataset_name: str
     gene: str | None = Field(description="The gene as asked for.")
     gene_name: str | None = Field(description="The dataset's name for the gene.")
+    units: str = Field(description="What each value is in, as Bloom's colour bar says.")
     cells_in_scope: int = Field(description="Cells of the cell types asked for (all).")
     cells_expressing: int | None = Field(
         description="Of those, cells with a value above 0; None when no values were read "

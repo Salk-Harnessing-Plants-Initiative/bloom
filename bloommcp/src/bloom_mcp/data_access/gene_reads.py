@@ -70,7 +70,7 @@ COLUMNS: dict[str, tuple[str, ...]] = {
         "modification_description",
     ),
     "accessions": ("id", "name"),
-    "scrna_datasets": ("id", "name", "species_id", "kind"),
+    "scrna_datasets": ("id", "name", "species_id", "kind", "expression_units"),
     "scrna_genes": ("id", "dataset_id", "gene_name"),
     "scrna_de_runs": ("id", "dataset_id", "completed_at", "method"),
     "scrna_de": (

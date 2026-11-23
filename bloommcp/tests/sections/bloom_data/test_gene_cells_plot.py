@@ -42,9 +42,10 @@ def drawn(monkeypatch):
     seen = {}
     real = gene_cells_plot.umap.gene_figure
 
-    def record(x, y, values, codes, names, focus, title):
+    def record(x, y, values, codes, names, focus, title, **kw):
         seen.update(values=values, codes=codes, names=names, focus=focus, title=title)
-        return real(x, y, values, codes, names, focus, title)
+        seen.update(kw)
+        return real(x, y, values, codes, names, focus, title, **kw)
 
     monkeypatch.setattr(gene_cells_plot.umap, "gene_figure", record)
     return seen
@@ -68,6 +69,13 @@ def test_every_cell_is_drawn_with_its_own_value_and_cell_type(expression_db, dra
     assert drawn["names"] == ["Cortex", "X"]
     assert drawn["focus"] is None
     assert drawn["title"] == "AT4G28110 in MYB41 root"
+
+
+def test_the_colour_bar_is_in_the_datasets_units(expression_db, drawn):
+    reader, _ = expression_db
+    reader.tables["scrna_datasets"][0]["expression_units"] = "counts per 10k"
+    _run(plot="umap")
+    assert drawn["units"] == "counts per 10k"
 
 
 def test_named_cell_types_are_the_focus(expression_db, drawn):

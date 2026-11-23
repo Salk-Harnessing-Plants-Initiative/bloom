@@ -34,6 +34,8 @@ CALL_SECONDS = 40
 # Decimal places kept in each value, as the expression tool keeps them.
 DIGITS = 4
 OUT_OF_TIME = "Not read: the call ran out of time. Try again, or ask about fewer cells."
+# The website's colour-bar label for a dataset that records no units.
+UNITS_FALLBACK = "log-normalized"
 
 Name = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
@@ -194,6 +196,7 @@ def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult | WithImages:
         dataset_name=dataset["name"],
         gene=params.gene,
         gene_name=gene["gene_name"] if gene else None,
+        units=dataset.get("expression_units") or UNITS_FALLBACK,
         cells_in_scope=len(in_scope),
         cells_expressing=None,
         offset=params.offset,
@@ -232,7 +235,7 @@ def scrna_gene_cells(params: GeneCellsParams) -> GeneCellsResult | WithImages:
     elif params.plot == "umap" and values is not None and gene is not None:
         title = f"{gene['gene_name']} in {dataset['name']}"
         image, reasons = gene_cells_plot.gene_umap(
-            cells, clusters, values, scope, title, deadline
+            cells, clusters, values, scope, title, result.units, deadline
         )
         result.notes += reasons
     result = fit(result, rows, more, MAX_REPLY_CHARS)

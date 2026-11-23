@@ -337,6 +337,13 @@ def test_out_of_time_before_the_counts_file(expression_db, monkeypatch):
     assert not any(call[0] == "download" for call in files.calls)
 
 
+def test_values_are_in_the_datasets_units_or_log_normalized(expression_db):
+    assert _run().units == "log-normalized"
+    reader, _ = expression_db
+    reader.tables["scrna_datasets"][0]["expression_units"] = "counts per 10k"
+    assert _run().units == "counts per 10k"
+
+
 def test_the_link_opens_the_umap_on_the_gene(expression_db):
     assert _run().page_url == f"{SITE}/app/expression/16/3?tab=umap&gene=AT4G28110"
 

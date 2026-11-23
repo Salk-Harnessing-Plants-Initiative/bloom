@@ -37,6 +37,7 @@ def _map(values, codes=None, focus=None, names=("A", "B")):
         list(names),
         None if focus is None else np.asarray(focus, dtype=bool),
         "AT4G28110 in MYB41 root",
+        units="log-normalized",
     )
 
 
@@ -83,8 +84,9 @@ def test_dark_ground_and_equal_axes():
     assert ax.get_aspect() == 1.0
 
 
-def test_a_colour_bar_is_drawn():
-    assert any(a.get_label() == "<colorbar>" for a in _map([0.0, 1.0]).axes)
+def test_a_colour_bar_is_drawn_and_names_the_units():
+    [bar] = [a for a in _map([0.0, 1.0]).axes if a.get_label() == "<colorbar>"]
+    assert bar.get_ylabel() == "log-normalized"
 
 
 def _grid_points(group_sizes):
@@ -125,7 +127,7 @@ def test_names_are_written_in_full_and_no_cell_type_is_not_named():
     x, y, codes = _grid_points([(6, (10.0, 10.0)), (6, (80.0, 80.0))])
     codes[codes == 1] = -1
     values = np.ones(len(x))
-    fig = umap.gene_figure(x, y, values, codes, [long, "B"], None, "t")
+    fig = umap.gene_figure(x, y, values, codes, [long, "B"], None, "t", units="u")
     [ax] = [a for a in fig.axes if a.get_label() == umap.MAP_AXES]
     assert [t.get_text() for t in ax.texts] == [long]
 
@@ -144,7 +146,7 @@ def test_two_hundred_thousand_cells_draw_under_the_cap():
     codes = rng.integers(0, 20, size=n)
     names = [f"type {i}" for i in range(20)]
     drawn = _png.draw(
-        lambda: umap.gene_figure(x, y, values, codes, names, None, "t"),
+        lambda: umap.gene_figure(x, y, values, codes, names, None, "t", units="u"),
         time.monotonic() + 120,
     )
     assert drawn.reason is None and len(drawn.png) <= _png.MAX_PNG_BYTES

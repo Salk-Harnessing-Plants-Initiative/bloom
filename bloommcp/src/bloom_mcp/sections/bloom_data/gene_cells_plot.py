@@ -84,13 +84,16 @@ def gene_umap(
     values: list[float],
     scope: set[int] | None,
     title: str,
+    units: str,
     deadline: float,
 ) -> tuple[ToolImage | None, list[str]]:
-    """The UMAP coloured by `values`, or notes saying why there is none."""
+    """The UMAP coloured by `values` in `units`, or notes saying why there is none."""
     m, shown = _map(cells, clusters, scope), _cut(title)[0]
     lit = np.asarray(values, dtype=float)[m.placed]
     return _image(
-        lambda: umap.gene_figure(m.x, m.y, lit, m.codes, m.names, m.focus, shown),
+        lambda: umap.gene_figure(
+            m.x, m.y, lit, m.codes, m.names, m.focus, shown, units=units
+        ),
         m,
         shown,
         deadline,
