@@ -6,7 +6,7 @@ import {
   BUILD_ROLES,
   assemblyName,
   bloomGenomeConfig,
-  bloomGenomesNote,
+  pageNotes,
   buildFileUri,
   geneTrackId,
   mergeBrowserConfig,
@@ -108,7 +108,11 @@ describe("mergeBrowserConfig", () => {
   it("adds Bloom's genomes after the outside ones without changing them", () => {
     const merged = mergeBrowserConfig(outside, [genome]);
     expect(merged.assemblies.map((a) => a.name)).toEqual(["Outside.A", "athaliana.col-0.hpiv02.v2"]);
-    expect(merged.tracks).toHaveLength(2);
+    expect((merged.tracks as { trackId: string }[]).map((t) => t.trackId)).toEqual([
+      "outside-genes",
+      "athaliana.col-0.hpiv02.v2-genes",
+      "athaliana.col-0.hpiv02.v2-gene-density",
+    ]);
     expect(merged.configuration).toEqual({ theme: "x" });
     expect(outside.assemblies).toHaveLength(1);
   });
@@ -166,28 +170,34 @@ describe("notOfferedMessage", () => {
   });
 });
 
-describe("bloomGenomesNote", () => {
-  it("counts one version", () => {
-    expect(bloomGenomesNote(1, null)).toBe(
-      "1 Bloom genome version listed with the reference genomes; a version appears once its browser files are built.",
-    );
+describe("pageNotes", () => {
+  it("says nothing when everything loads", () => {
+    expect(pageNotes(null, null)).toEqual([]);
   });
 
-  it("counts several versions", () => {
-    expect(bloomGenomesNote(3, null)).toMatch(/^3 Bloom genome versions listed/);
-  });
-
-  it("says plainly when none is browsable", () => {
-    expect(bloomGenomesNote(0, null)).toMatch(/^Bloom has no browsable genome versions yet/);
-  });
-
-  it("gives the reason Bloom's genomes are missing, and that the outside ones work", () => {
-    expect(bloomGenomesNote(0, "Bloom's own genomes could not be read.")).toBe(
+  it("says Bloom's genomes could not be loaded, and that the outside ones work", () => {
+    expect(pageNotes("Bloom's own genomes could not be read.", null)).toEqual([
       "Bloom's own genomes could not be read. The reference genomes below still work.",
-    );
+    ]);
+  });
+
+  it("gives a link's problem", () => {
+    expect(pageNotes(null, "Bloom has no genome version \"x.v1\".")).toEqual([
+      "Bloom has no genome version \"x.v1\".",
+    ]);
+  });
+
+  it("gives every note it is given, skipping empty ones", () => {
+    expect(pageNotes(null, null, "One.", undefined, "Two.")).toEqual(["One.", "Two."]);
+  });
+
+  it("gives both, the load error first", () => {
+    expect(pageNotes("Could not read.", "AT1G9 is not among x.v1's genes; showing the whole genome.")).toEqual([
+      "Could not read. The reference genomes below still work.",
+      "AT1G9 is not among x.v1's genes; showing the whole genome.",
+    ]);
   });
 });
-
 
 describe("the orthologs link in a gene's details", () => {
   // Evaluated the way JBrowse evaluates formatDetails.
