@@ -1,18 +1,17 @@
 import "@/styles/globals.css";
-import { Fraunces } from "next/font/google";
+import localFont from "next/font/local";
 
 /**
- * Fraunces — the display serif used on the redesigned login page and
- * any future marketing/public surfaces. Self-hosted via next/font so
- * there's no FOUC and no runtime DNS/TLS to fonts.googleapis.com.
+ * Fraunces — the italic display serif on the login page, shipped with the app (SIL OFL, see
+ * app/fonts/OFL.txt). One variable file covers weights 400–600.
  *
  * The variable name --font-fraunces is referenced by
  * web/app/(public)/login/login.module.css for all italic headings.
  */
-const fraunces = Fraunces({
-  subsets: ["latin"],
-  style: ["italic"],
-  weight: ["400", "500", "600"],
+const fraunces = localFont({
+  src: "./fonts/fraunces-italic-latin.woff2",
+  style: "italic",
+  weight: "400 600",
   display: "swap",
   variable: "--font-fraunces",
 });
