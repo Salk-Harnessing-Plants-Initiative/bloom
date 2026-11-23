@@ -1,4 +1,4 @@
-import { geneTrackId, type LoadedBrowserConfig } from "./bloom-genomes";
+import { geneTrackId, sequenceTrackId, type LoadedBrowserConfig } from "./bloom-genomes";
 import { densityTrackId } from "./gene-density";
 import type { GenePlace } from "./gene-links";
 import type { PicksPlan } from "./several-genes";
@@ -13,6 +13,20 @@ export interface LaunchTarget {
 /** What to open: the target, with the gene track shown for a Bloom genome version. */
 export interface LaunchPlan extends LaunchTarget {
   tracks: string[];
+  /** Open the default views, once the assembly's chromosomes are known. */
+  firstRegion?: true;
+}
+
+/** The link parameters the browser page reads; a link with none of them opens the default. */
+const BROWSER_PARAMS = ["genome", "reference", "gene", "genes", "loc", "missing"];
+
+/** How much of the longest chromosome the default gene view shows, bp. */
+export const DEFAULT_SPAN_BP = 50_000;
+
+/** One linear view to open: a region and the tracks shown on it. */
+export interface ViewToOpen {
+  loc: string;
+  tracks: string[];
 }
 
 /** Where a link opens: `?genome=<name>.v<N>[&loc=<region>]` for a Bloom genome version, or the
@@ -25,19 +39,50 @@ export function launchTarget(params: URLSearchParams): LaunchTarget | null {
   return assembly && loc ? { assembly, loc } : null;
 }
 
-/** The target if the browser offers its assembly, else null (the page says why). */
+/** True when the link has none of the browser page's parameters. */
+export function namesNothing(params: URLSearchParams): boolean {
+  return BROWSER_PARAMS.every((name) => !params.has(name));
+}
+
+/** The target if the browser offers its assembly, else null (the page says why). With no target
+ * and `useDefault`, the most recently built Bloom genome version (highest browser build). */
 export function launchPlan(
   target: LaunchTarget | null,
-  loaded: Pick<LoadedBrowserConfig, "config" | "bloomGenomes">,
+  loaded: Pick<LoadedBrowserConfig, "config" | "bloomGenomes" | "bloomBuilds">,
+  useDefault = false,
 ): LaunchPlan | null {
-  if (!target || !loaded.config.assemblies.some((a) => a.name === target.assembly)) return null;
+  if (!target) {
+    if (!useDefault) return null;
+    const newest = [...loaded.bloomGenomes].sort((a, b) => loaded.bloomBuilds[b] - loaded.bloomBuilds[a])[0];
+    return newest ? { assembly: newest, tracks: bloomTracks(newest), firstRegion: true } : null;
+  }
+  if (!loaded.config.assemblies.some((a) => a.name === target.assembly)) return null;
   const tracks = loaded.bloomGenomes.includes(target.assembly) ? bloomTracks(target.assembly) : [];
   return { ...target, tracks };
 }
 
-/** The tracks shown with a Bloom genome version: its genes and gene density. */
+/** The tracks shown with a Bloom genome version: its genes (density is ticked when wanted). */
 export function bloomTracks(assembly: string): string[] {
-  return [geneTrackId(assembly), densityTrackId(assembly)];
+  return [geneTrackId(assembly)];
+}
+
+/** The default views of a genome's longest chromosome (the first of equal ones, so an organelle
+ * listed first is passed over): the whole chromosome with gene density, then its first
+ * `DEFAULT_SPAN_BP` with the reference sequence and genes. */
+export function defaultViews(assembly: string, contigLengths: Record<string, number>): ViewToOpen[] | undefined {
+  const longest = Object.entries(contigLengths).reduce<[string, number] | undefined>(
+    (best, entry) => (!best || entry[1] > best[1] ? entry : best),
+    undefined,
+  );
+  if (!longest) return undefined;
+  const [chromosome, length] = longest;
+  return [
+    { loc: `${chromosome}:1..${length}`, tracks: [densityTrackId(assembly)] },
+    {
+      loc: `${chromosome}:1..${Math.min(length, DEFAULT_SPAN_BP)}`,
+      tracks: [sequenceTrackId(assembly), geneTrackId(assembly)],
+    },
+  ];
 }
 
 /** The picks to open instead of the link's location: those placed on the launched genome. */

@@ -4,8 +4,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 import type { LoadedBrowserConfig } from "@/lib/jbrowse/bloom-genomes";
-import { openPicks, type BrowserSession } from "@/lib/jbrowse/browser-session";
-import { launchPlan, launchTarget, picksToOpen } from "@/lib/jbrowse/launch";
+import { contigLengths, openEmptyView, openPicks, openViews, type BrowserSession } from "@/lib/jbrowse/browser-session";
+import { genomeLink } from "@/lib/jbrowse/gene-links";
+import { defaultViews, launchPlan, launchTarget, namesNothing, picksToOpen, type ViewToOpen } from "@/lib/jbrowse/launch";
 import type { PicksPlan } from "@/lib/jbrowse/several-genes";
 
 // Lazy load JBrowse only on client side
@@ -30,15 +31,28 @@ export interface JBrowseProps {
   onSession?: (session: BrowserSession) => void;
   /** Called whenever the session changes. */
   onChange?: () => void;
+  /** Called with the genome the page opened by itself, when the link named none. */
+  onDefaultOpened?: (assembly: string) => void;
 }
 
-function JBrowse({ loaded, picks, onSession, onChange }: JBrowseProps) {
+const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** The default views of a genome, or an error naming the reason. */
+async function readDefaultViews(session: BrowserSession, assembly: string): Promise<ViewToOpen[]> {
+  const views = defaultViews(assembly, await contigLengths(session, assembly));
+  if (!views) throw new Error("its chromosomes could not be read.");
+  return views;
+}
+
+function JBrowse({ loaded, picks, onSession, onChange, onDefaultOpened }: JBrowseProps) {
   const onSessionRef = useRef(onSession);
   const onChangeRef = useRef(onChange);
+  const onDefaultRef = useRef(onDefaultOpened);
   onSessionRef.current = onSession;
   onChangeRef.current = onChange;
+  onDefaultRef.current = onDefaultOpened;
   const searchParams = useSearchParams();
-  const plan = launchPlan(launchTarget(searchParams), loaded);
+  const plan = launchPlan(launchTarget(searchParams), loaded, namesNothing(searchParams));
   // Read when the browser is made: a later address change (picks opened in place) keeps it.
   const launch = useRef({ plan, picks });
   launch.current = { plan, picks };
@@ -69,33 +83,49 @@ function JBrowse({ loaded, picks, onSession, onChange }: JBrowseProps) {
         setLoadingStatus("Initializing genome browser...");
         const state = createViewState({ config, onChange: () => onChangeRef.current?.() });
         const { pluginManager } = getEnv(state);
-        setViewState(state);
-        onSessionRef.current?.(state.session);
-        setLaunchError(null);
-
+        const session = state.session;
         const { plan: target, picks: picked } = launch.current;
-        if (target) {
+
+        // The default views are read and added before anything is shown, so the search cannot
+        // open a view of its own in the meantime.
+        let failed: string | null = null;
+        if (target?.firstRegion) {
+          setLoadingStatus(`Loading ${target.assembly}...`);
+          try {
+            const views = await readDefaultViews(session, target.assembly);
+            if (!live) return;
+            openViews(session, target.assembly, views);
+            window.history.replaceState(null, "", genomeLink(target.assembly, views[views.length - 1].loc));
+            onDefaultRef.current?.(target.assembly);
+          } catch (err) {
+            if (!live) return;
+            failed = `${target.assembly} could not be opened: ${reason(err)}`;
+            openEmptyView(session);
+          }
+        } else if (target) {
           const { assembly, loc, tracks } = target;
-          setLoadingStatus(`Loading ${assembly}${loc ? ` at ${loc}` : ""}...`);
           const places = picksToOpen(target, picked);
           // Without a location JBrowse shows the whole assembly.
           const opened = places
-            ? openPicks(state.session, assembly, places, tracks)
+            ? openPicks(session, assembly, places, tracks)
             : Promise.resolve(
                 pluginManager.evaluateAsyncExtensionPoint("LaunchView-LinearGenomeView", {
                   tracks,
                   loc,
                   assembly,
-                  session: state.session,
+                  session,
                 }),
               );
           opened.catch((err: unknown) => {
-            if (live) {
-              setLaunchError(`${assembly} could not be opened${loc ? ` at ${loc}` : ""}: ${err instanceof Error ? err.message : String(err)}`);
-            }
+            if (live) setLaunchError(`${assembly} could not be opened${loc ? ` at ${loc}` : ""}: ${reason(err)}`);
           });
+        } else {
+          openEmptyView(session);
         }
 
+        setViewState(state);
+        onSessionRef.current?.(session);
+        setLaunchError(failed);
         setIsLoading(false);
       } catch (err) {
         if (!live) return;

@@ -45,8 +45,12 @@ const FILTER_SYNTAX = /[,()*\\"]/;
 
 /** The browser opened on the gene's genome version at its span. */
 export function browserLink(place: Pick<GenePlace, "assembly" | "contig" | "start" | "end">): string {
-  const loc = `${place.contig}:${place.start}..${place.end}`;
-  return `/app/jbrowse?genome=${encodeURIComponent(place.assembly)}&loc=${encodeURIComponent(loc)}`;
+  return genomeLink(place.assembly, `${place.contig}:${place.start}..${place.end}`);
+}
+
+/** The browser opened on a genome version at a region. */
+export function genomeLink(assembly: string, loc: string): string {
+  return `/app/jbrowse?genome=${encodeURIComponent(assembly)}&loc=${encodeURIComponent(loc)}`;
 }
 
 /** The browser opened on a genome version at a gene, which the page places from its ID or name. */
