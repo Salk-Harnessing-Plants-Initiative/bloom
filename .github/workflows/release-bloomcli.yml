@@ -48,8 +48,8 @@ jobs:
     # tag/version mismatch check, never silently skipped or accepted.
     if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'bloomctl-')
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Read version from pyproject.toml
         id: version
@@ -117,8 +117,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       # Point the published page at this exact release: repo links to the tag's commit
       # rather than a moving branch, and the install commands at the version being
@@ -240,7 +240,7 @@ jobs:
         run: sha256sum -c dist.sha256
 
       - name: Upload the verified artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: bloomctl-dist
           path: |
@@ -259,10 +259,10 @@ jobs:
       contents: read
       id-token: write # OIDC token for PyPI trusted publishing
     steps:
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Download the verified artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: bloomctl-dist
           path: bloomcli/

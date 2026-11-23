@@ -20,6 +20,7 @@ export const navSections: NavSection[] = [
       { name: "Plate\nPhenotypes", href: "/app/plate-phenotypes" },
       { name: "Traits", href: "/app/traits" },
       { name: "Genes", href: "/app/genes" },
+      { name: "Genome\nBrowser", href: "/app/jbrowse" },
       { name: "Expression", href: "/app/expression" },
       { name: "Multi-dataset\nIntegration", href: "/app/integrations" },
     ],
@@ -27,8 +28,6 @@ export const navSections: NavSection[] = [
   {
     heading: "Tools",
     items: [
-      // Temporarily disabled — Bloom Assistant is a work in progress.
-      // { name: "Bloom Assistant", href: "/chat" },
       { name: "OrthoBrowser", href: "/app/orthofinder" },
       // Named for its pipeline: each pipeline has runs of its own.
       { name: "Cylinder\nPipeline Runs", href: "/app/cyl-pipeline-runs" },

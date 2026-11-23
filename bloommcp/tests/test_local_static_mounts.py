@@ -1,5 +1,5 @@
 """bloom_mcp.server.build_app()'s local-mode `/plots` StaticFiles mount (#642)
-— self-serving the local plots root so a `BLOOM_PLOTS_URL` built from
+— self-serving the local plots root so a URL built from
 `storage_backend.self_serve_base_url()` actually resolves when bloommcp runs
 standalone (no docker-compose).
 

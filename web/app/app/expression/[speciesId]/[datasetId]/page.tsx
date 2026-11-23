@@ -10,6 +10,7 @@ import { ExpressionCockpit } from "@/components/expression-cockpit";
 import ExpressionDatasetBanner from "@/components/expression-dataset-banner";
 import ExpressionDatasetQc from "@/components/expression-dataset-qc";
 import { datasetRunId } from "@/components/expression-dataset-origin";
+import { parseGeneParam } from "@/components/expression-lib/linked-genes";
 import { METRICS_SUMMARY, WEB_SUMMARY, keyMetrics, parseMetrics, readReport, storedReports } from "@/lib/rnaseq-reports";
 
 export default async function Dataset({
@@ -17,10 +18,10 @@ export default async function Dataset({
   searchParams,
 }: {
   params: Promise<{ datasetId: string; speciesId: string }>;
-  searchParams?: Promise<{ tab?: string | string[] }>;
+  searchParams?: Promise<{ tab?: string | string[]; gene?: string | string[] }>;
 }) {
   const { datasetId, speciesId } = await params;
-  const { tab } = (await searchParams) ?? {};
+  const { tab, gene } = (await searchParams) ?? {};
   const datasetIdNum = Number(datasetId);
   const speciesIdNum = Number(speciesId);
   if (!Number.isFinite(datasetIdNum) || !Number.isFinite(speciesIdNum)) notFound();
@@ -104,6 +105,7 @@ export default async function Dataset({
         datasetId={datasetIdNum}
         datasetName={dataset.name}
         initialTab={typeof tab === "string" ? tab : undefined}
+        genes={parseGeneParam(gene)}
         reportRunId={qc?.hasReport ? qc.runId : null}
       />
     </div>

@@ -1,7 +1,8 @@
 import { getUser } from "@/lib/supabase/server";
 import Mixpanel from "mixpanel";
 
-import { orthobrowserUrl } from "./orthobrowser-url";
+import { BloomGenomesBar } from "./bloom-genomes-bar";
+import { orthobrowserUrl, searchedGene } from "./orthobrowser-url";
 
 export default async function OrthofinderPage({
   searchParams,
@@ -9,6 +10,7 @@ export default async function OrthofinderPage({
   searchParams?: Promise<{ search?: string | string[] }>;
 }) {
   const { search } = (await searchParams) ?? {};
+  const gene = searchedGene(search);
   const user = await getUser();
   const mixpanel = process.env.MIXPANEL_TOKEN
     ? Mixpanel.init(process.env.MIXPANEL_TOKEN)
@@ -32,6 +34,8 @@ export default async function OrthofinderPage({
           nhartwick@salk.edu
         </a>
       </div>
+
+      {gene && <BloomGenomesBar gene={gene} />}
 
       <iframe
         src={orthobrowserUrl(search)}

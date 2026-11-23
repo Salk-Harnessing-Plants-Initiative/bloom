@@ -45,12 +45,13 @@ def test_every_link_names_the_route_param_of_each_placeholder():
         assert set(_PLACEHOLDER.findall(pattern)) == set(page_links.PAGE_PARAMS[table])
 
 
-def test_a_link_note_says_to_skip_empty_columns(monkeypatch):
+def test_a_link_note_points_to_page_url_and_empty_columns(monkeypatch):
     monkeypatch.setenv("SITE_URL", " https://bloom.example/ ")
     note = page_links.link_note("rnaseq_runs")
     assert note is not None
     assert "https://bloom.example/app/rnaseq-runs/{id}" in note
-    assert "give none when any of those columns is empty" in note
+    assert "page_url" in note
+    assert "A row with no page_url has no page" in note
 
 
 @pytest.mark.parametrize("table", sorted(page_links.PAGE_LINKS))
@@ -131,3 +132,30 @@ def test_a_plate_scan_with_no_wave_links_to_the_websites_none_wave(monkeypatch):
     assert page_links.page_url("gravi_scans_extended", row) == (
         "https://bloom.example/app/plate-phenotypes/1/5/wave/none/P"
     )
+
+
+def test_the_expression_page_opens_on_the_genes_named(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example/")
+    dataset = {"id": 3, "species_id": 16}
+    assert page_links.expression_page(dataset, ["AT4G28110", "AT1G01010"]) == (
+        "https://bloom.example/app/expression/16/3?tab=genes&gene=AT4G28110,AT1G01010"
+    )
+    assert page_links.expression_page(dataset, ["a b&c"]).endswith("gene=a%20b%26c")
+    assert (
+        page_links.expression_page(dataset, [])
+        == "https://bloom.example/app/expression/16/3"
+    )
+    assert page_links.expression_page({"id": 3, "species_id": None}, ["G"]) is None
+    monkeypatch.delenv("SITE_URL")
+    assert page_links.expression_page(dataset, ["G"]) is None
+
+
+def test_the_umap_page_is_coloured_by_the_gene_named(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example/")
+    dataset = {"id": 3, "species_id": 16}
+    base = "https://bloom.example/app/expression/16/3?tab=umap"
+    assert page_links.umap_page(dataset, "AT4G28110") == base + "&gene=AT4G28110"
+    assert page_links.umap_page(dataset, "a b&c").endswith("gene=a%20b%26c")
+    assert page_links.umap_page(dataset, None) == base
+    monkeypatch.delenv("SITE_URL")
+    assert page_links.umap_page(dataset, "G") is None

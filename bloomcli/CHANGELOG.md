@@ -8,6 +8,33 @@ and this project uses [PEP 440](https://peps.python.org/pep-0440/) versioning
 
 ## [Unreleased]
 
+## [0.1.0a20] - 2026-11-10 — genome browser builds
+
+### Added
+
+- `genome index <name>.vN` builds a ready genome version's files for the genome browser (bgzip
+  FASTA with `.fai` and `.gzi`, and the genes as position-ordered bgzip GFF3 with `.tbi`, made
+  from the GTF), uploads them, and records every gene's position. A failure or stop signal
+  abandons the build, and a stop at any point removes the temporary files;
+  `--replace-unfinished` clears your own stopped build. A database timeout or lock error exits 1
+  (worth retrying). Values that could read as HTML (`<`, `>`) are removed from the browser's
+  gene details. Needs the new `genome-index` extra (`pip install 'bloomctl[genome-index]'`).
+- `genome list` shows each version's newest browser build and its status.
+
+### Changed
+
+- `genome upload` checks the whole GTF against the FASTA before sending: every line on a contig
+  the FASTA has and within its length, starts and ends in order, one contig per gene, one gene
+  per transcript, and Bloom's 200-character limits; a repeated FASTA contig is refused too. The
+  message names the line, gene or contig. Attribute values may be quoted or not (GENCODE's
+  `exon_number 1;`). IDs holding `<`, `>`, `"` or a control character, contig names holding
+  unusual whitespace, `%`, `<` or `>`, and GTFs over 1,000,000 genes or 3,000,000 transcripts
+  are refused. Genes kept as one span over several `gene` lines, and lines without a `gene_id`,
+  are listed on stderr.
+- An upload whose session runs out before a file starts signs in again, as it already did
+  part-way through a file.
+- A stop signal that was ignored (a run under `nohup`) stays ignored while a command writes.
+
 ## [0.1.0a19] - 2026-10-21 — parallel gene uploads no longer collide
 
 ### Fixed

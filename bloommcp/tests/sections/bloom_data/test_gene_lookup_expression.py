@@ -15,7 +15,7 @@ from gene_lookup_data import (
     lookup,
 )
 
-from bloom_mcp.data_access import gene_expression, gene_reads
+from bloom_mcp.data_access import cluster_panel, de_choice, gene_expression, gene_reads
 from bloom_mcp.data_access.fake_table_reader import FakeTableReader
 from bloom_mcp.sections.bloom_data.gene_lookup import gene_lookup
 
@@ -35,7 +35,26 @@ def test_markers_use_the_newest_run_with_the_comparison_over_most_cells(genes_db
         "Endodermis",
         "nuclei",
     )
-    assert (markers["c4"].pct_in_cluster, markers["c4"].pct_elsewhere) == (0.8, 0.1)
+    assert (markers["c4"].pct_in_cell_type, markers["c4"].pct_elsewhere) == (0.8, 0.1)
+
+
+def test_an_untested_newer_comparison_leaves_the_older_tested_one(genes_db):
+    genes_db.tables["scrna_de"].append(
+        _de(20, 2, "cluster", "c3", "rest", 50, 500, cluster="c3", tested=False)
+    )
+    genes_db.tables["scrna_de_genes"].append(_hit(20, 7.0, 1e-9))
+    [dataset] = lookup("MYB41").expression
+    assert {m.cluster_id: m.log2fc for m in dataset.markers}["c3"] == 2.0
+
+
+def test_a_comparison_filed_under_another_cluster_is_not_its_marker(genes_db):
+    # Filed under c3 in the newer run, but comparing c5 against the rest.
+    genes_db.tables["scrna_de"].append(
+        _de(21, 2, "cluster", "c5", "rest", 999, 9999, cluster="c3")
+    )
+    genes_db.tables["scrna_de_genes"].append(_hit(21, 8.0, 1e-9))
+    [dataset] = lookup("MYB41").expression
+    assert {m.cluster_id: m.log2fc for m in dataset.markers}["c3"] == 2.0
 
 
 def test_a_gene_down_in_a_cluster_is_not_its_marker(genes_db):
@@ -46,12 +65,22 @@ def test_a_gene_down_in_a_cluster_is_not_its_marker(genes_db):
 def test_genotype_comparisons_come_from_the_newest_run_that_has_them(genes_db):
     [dataset] = lookup("MYB41").expression
     [comparison] = dataset.genotype_comparisons
-    assert (comparison.group1, comparison.group2, comparison.direction) == (
+    assert (comparison.group1, comparison.group2, comparison.higher_in) == (
         "pFACT",
         "Col-0",
-        "up",
+        "pFACT",
     )
-    assert not comparison.absent_in_one_group
+    assert not comparison.found_in_one_group_only
+    assert not comparison.likely_found_in_one_group_only
+
+
+def test_an_untested_genotype_comparison_hides_no_tested_one(genes_db):
+    # Same run, cell type and contrast as de 14, and first by id; untested, so no genes.
+    genes_db.tables["scrna_de"].append(
+        _de(9, 2, "genotype", "untested", "Col-0", 2, 3, tested=False)
+    )
+    [dataset] = lookup("MYB41").expression
+    assert [c.group1 for c in dataset.genotype_comparisons] == ["pFACT"]
 
 
 def test_a_construct_naming_the_gene_flags_the_dataset(genes_db):
@@ -73,10 +102,17 @@ def test_an_infinite_fold_change_is_read_as_absent_from_one_group(genes_db):
     _set_hit(genes_db, 14, log2fc="-Infinity")
     [dataset] = lookup("MYB41").expression
     marker = next(m for m in dataset.markers if m.cluster_id == "c4")
-    assert marker.log2fc is None and marker.absent_in_one_group
+    assert marker.log2fc is None and marker.found_in_one_group_only
     [comparison] = dataset.genotype_comparisons
-    assert comparison.log2fc is None and comparison.absent_in_one_group
-    assert comparison.direction == "down"
+    assert comparison.log2fc is None and comparison.found_in_one_group_only
+    assert comparison.higher_in == "Col-0"
+
+
+def test_a_large_finite_fold_change_is_likely_from_one_group_only(genes_db):
+    _set_hit(genes_db, 14, log2fc=25.0)
+    [comparison] = lookup("MYB41").expression[0].genotype_comparisons
+    assert comparison.log2fc == 25.0 and comparison.likely_found_in_one_group_only
+    assert not comparison.found_in_one_group_only
 
 
 def test_a_nan_result_passes_no_cut(genes_db):
@@ -95,9 +131,9 @@ def test_a_genotype_comparison_names_its_cluster_and_cell_type(genes_db):
     [dataset] = lookup("MYB41").expression
     by_cluster = {c.cluster_id: c for c in dataset.genotype_comparisons}
     assert set(by_cluster) == {None, "c3"}
-    assert (by_cluster["c3"].cell_type, by_cluster["c3"].direction) == (
+    assert (by_cluster["c3"].cell_type, by_cluster["c3"].higher_in) == (
         "Endodermis",
-        "down",
+        "Col-0",
     )
     assert by_cluster[None].cell_type is None
 
@@ -156,11 +192,26 @@ def test_a_saved_top_list_says_whether_the_panel_shows_the_gene(genes_db):
     assert _panel(dataset.markers) == {"c3": True, "c4": False}
 
 
+@pytest.mark.parametrize(
+    "markers",
+    [{"top": [{"symbol": "X"}]}, {"top": []}, ["x"], {"top": {}}, "x", None],
+)
+def test_a_saved_list_the_panel_cannot_read_falls_back_to_the_analysis(
+    genes_db, markers
+):
+    # MYB41 is in the top of c3's comparison, so the fallback lists it.
+    genes_db.tables["scrna_cluster_stats"] = [
+        {"dataset_id": 14, "cluster_id": "c3", "markers": markers}
+    ]
+    [dataset] = lookup("MYB41").expression
+    assert _panel(dataset.markers)["c3"] is True
+
+
 def test_without_a_saved_list_the_panel_is_the_top_of_the_analysis(genes_db):
     # c4's chosen comparison is de 11; push MYB41 out of its top 25 there.
     genes_db.tables["scrna_de_genes"] += [
         {"de_id": 11, "gene_id": 1000 + i, "log2fc": 2.0, "fdr": 1e-6}
-        for i in range(gene_expression.TOP_MARKERS)
+        for i in range(cluster_panel.TOP_MARKERS)
     ]
     [dataset] = lookup("MYB41").expression
     assert _panel(dataset.markers) == {"c3": True, "c4": False}
@@ -206,6 +257,11 @@ def test_the_cuts_match_the_websites():
     assert gene_reads.OFF_SCALE_LOG2FC == const(
         "expression-differential-analysis.tsx", "OFF_SCALE_LOG2FC"
     )
-    assert gene_expression.TOP_MARKERS == const(
+    assert cluster_panel.TOP_MARKERS == const(
         "expression-lib/cluster-markers.ts", "TOP_MARKERS"
     )
+    rest = re.search(
+        r'const REST_GROUP = "(\w+)";',
+        (_WEB / "expression-lib/cluster-markers.ts").read_text(),
+    )
+    assert rest and de_choice.REST_GROUP == rest.group(1)

@@ -87,7 +87,7 @@ dev-up: ensure-bloommcp-data-dirs
 		echo " package-lock.json found."; \
 	fi
 	@echo " Starting Bloom Dev Stack..."
-	docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build
+	docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build --remove-orphans
 	@echo " Bloom Dev Stack running in background"
 	@echo " Access at: http://localhost:3000"
 	@echo " View logs: make dev-logs"
@@ -129,7 +129,7 @@ prod-up:
 		echo " package-lock.json found. Installing .. "; \
 	fi
 	@echo " Starting Bloom Production Stack..."
-	sha=$$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore) && test -n "$$sha" && BLOOM_WEB_BUILD_SHA=$$sha docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+	sha=$$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore) && test -n "$$sha" && BLOOM_WEB_BUILD_SHA=$$sha docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
 	@echo " Bloom Production running in background"
 
 .PHONY: rebuild-prod-fresh
@@ -156,7 +156,7 @@ prod-down:
 .PHONY: staging-up
 staging-up:
 	@echo " Starting Bloom Staging Stack..."
-	sha=$$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore) && test -n "$$sha" && BLOOM_WEB_BUILD_SHA=$$sha docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build
+	sha=$$(git log -1 --format=%H -- web packages package.json package-lock.json .dockerignore) && test -n "$$sha" && BLOOM_WEB_BUILD_SHA=$$sha docker compose -p bloom_v2_staging -f docker-compose.prod.yml --env-file .env.staging up -d --build --remove-orphans
 	@echo " Bloom Staging running on port 8080"
 
 # Stop staging
@@ -213,7 +213,7 @@ reset-storage:
 	@docker volume ls -q | grep '^bloom_v2_dev_' | xargs -r docker volume rm || true
 
 	@echo "Bringing dev stack back up..."
-	@docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build
+	@docker compose -f docker-compose.dev.yml --env-file .env.dev up -d --build --remove-orphans
 
 	@echo "Waiting for database to be ready..."
 	@for i in 1 2 3 4 5 6 7 8 9 10; do \

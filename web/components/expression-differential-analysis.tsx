@@ -23,6 +23,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import * as d3 from "d3";
 
 import DeSummary from "./expression-de-summary";
+import { useDatasetGeneLinks } from "./gene-links";
 import {
   DEFAULT_FDR_CUT,
   DEFAULT_LOG2FC_CUT,
@@ -47,8 +48,21 @@ type GeneData = {
   _row: string;
 };
 
-export const columnsFor = (entry: DeEntry | null): GridColDef[] => [
-  { field: '_row', headerName: 'Gene Name', width: 180 },
+export const columnsFor = (
+  entry: DeEntry | null,
+  geneLinks?: (gene: string) => React.ReactNode,
+): GridColDef[] => [
+  {
+    field: '_row',
+    headerName: 'Gene Name',
+    width: geneLinks ? 300 : 180,
+    renderCell: (params) => (
+      <span>
+        {params.value as string}
+        {geneLinks?.(params.value as string)}
+      </span>
+    ),
+  },
   {
     field: 'avg_log2FC',
     headerName: 'Log2 Fold Change',
@@ -97,12 +111,17 @@ export const columnsFor = (entry: DeEntry | null): GridColDef[] => [
   }
 ];
 
-export function DataTable({ rows, entry }: { rows: GeneData[]; entry: DeEntry | null }) {
+export function DataTable({ rows, entry, geneLinks }: {
+  rows: GeneData[];
+  entry: DeEntry | null;
+  /** Links shown after each gene name. */
+  geneLinks?: (gene: string) => React.ReactNode;
+}) {
   return (
     <Paper sx={{ height: 500, width: '100%' }}>
       <DataGrid
         rows={rows ?? []}
-        columns={columnsFor(entry)}
+        columns={columnsFor(entry, geneLinks)}
         getRowId={(row) => row._row}
         initialState={{
           pagination: {
@@ -344,6 +363,7 @@ export default function DifferentialExpressionAnalysis({
   /** A comparison to select, e.g. from the UMAP tab's "Get the full list". */
   focus?: DeFocus | null;
 }) {
+  const geneLinks = useDatasetGeneLinks(file_id);
   const [runs, setRuns] = useState<AnalysisRun[]>([]);
   const [clusterList, setClusterList] = useState<DeEntry[]>([]);
   const [selectedCluster, setSelectedCluster] = useState<DeEntry | null>(null);
@@ -904,6 +924,7 @@ export default function DifferentialExpressionAnalysis({
         comparisons={clusterList}
         cuts={{ fdr: fdrCut, log2fc: lfcCut }}
         onSelect={openComparison}
+        geneLinks={geneLinks}
       />
 
       {/* Which comparison */}
@@ -1124,7 +1145,7 @@ export default function DifferentialExpressionAnalysis({
                 label="Significant only"
               />
             </Box>
-            <DataTable rows={tableRows} entry={selectedCluster} />
+            <DataTable rows={tableRows} entry={selectedCluster} geneLinks={geneLinks} />
           </Paper>
         </>
       )}

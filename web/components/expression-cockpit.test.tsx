@@ -10,6 +10,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 /** How many times each tab's body has been put on the page. */
 const mounts = vi.hoisted(() => ({ report: 0, umap: 0, genes: 0, de: 0, go: 0 }));
+/** The link's genes each view was last handed. */
+const handed = vi.hoisted(() => ({ umap: undefined as unknown, genes: undefined as unknown }));
 
 vi.mock("@/components/expression-mapping-report", async () => {
   const { useEffect } = await import("react");
@@ -24,7 +26,8 @@ vi.mock("@/components/expression-mapping-report", async () => {
 vi.mock("@/components/expression-view", async () => {
   const { useEffect } = await import("react");
   return {
-    ExpressionView: () => {
+    ExpressionView: ({ linkedGene }: { linkedGene?: string }) => {
+      handed.umap = linkedGene;
       useEffect(() => void mounts.umap++, []);
       return <div data-testid="umap-body" />;
     },
@@ -34,7 +37,8 @@ vi.mock("@/components/expression-view", async () => {
 vi.mock("@/components/expression-genes-by-cell-type", async () => {
   const { useEffect } = await import("react");
   return {
-    ExpressionGenesByCellType: () => {
+    ExpressionGenesByCellType: ({ linkedGenes }: { linkedGenes?: readonly string[] }) => {
+      handed.genes = linkedGenes;
       useEffect(() => void mounts.genes++, []);
       return <div data-testid="genes-body" />;
     },
@@ -142,5 +146,12 @@ describe("ExpressionCockpit's Mapping report tab", () => {
     render(<ExpressionCockpit datasetId={1} datasetName="ds" reportRunId={4} initialTab="report" />);
     expect(isShown("report-body")).toBe(true);
     expect(screen.queryByTestId("umap-body")).toBeNull();
+  });
+
+  it("hands the link's genes to Genes by cell type, and the first to the map", () => {
+    render(<ExpressionCockpit datasetId={1} datasetName="ds" initialTab="genes" genes={["g1", "g2"]} />);
+    expect(handed.genes).toEqual(["g1", "g2"]);
+    fireEvent.click(screen.getByRole("button", { name: "UMAP" }));
+    expect(handed.umap).toBe("g1");
   });
 });

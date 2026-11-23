@@ -25,6 +25,9 @@ EXCLUDED_TABLES = frozenset(
         "cyl_dataset_traits",
         "cyl_experiment_trait_count_changes",
         "cyl_scan_traits",
+        # Genome browser builds: excluded until the genome browser is in use.
+        "genome_browser_builds",
+        "genome_browser_genes",
         "protein_embeddings_esm2",
         "protein_embeddings_esm3",
         "rhizovision_accessions",

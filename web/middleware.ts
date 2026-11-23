@@ -1,6 +1,9 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+
+import { SIGNED_OUT_DATA_BODY, signedOutAnswer } from '@/lib/signed-out-paths'
+
 export const runtime = 'nodejs'
 
 export async function middleware(request: NextRequest) {
@@ -71,18 +74,12 @@ export async function middleware(request: NextRequest) {
   if (error) console.error('[Middleware] getUser() error:', error.message)
   console.log('[Middleware] User →', user?.email || 'NO USER')
 
-  // only redirect unauthenticated users on protected routes
-  const path = request.nextUrl.pathname
-  const isPublic =
-    path.startsWith('/login') ||
-    path.startsWith('/forgot-password') ||
-    path.startsWith('/reset-password') ||
-    path.startsWith('/verify') ||
-    path.startsWith('/auth') ||
-    path.startsWith('/error') ||
-    path.startsWith('/api') // allow internal routes
-
-  if (!user && !isPublic) {
+  // signed out: public paths pass, the genome browser's data answers 401, pages go to /login
+  const answer = user ? 'pass' : signedOutAnswer(request.nextUrl.pathname)
+  if (answer === '401') {
+    return new NextResponse(SIGNED_OUT_DATA_BODY, { status: 401, headers: { 'Content-Type': 'text/plain' } })
+  }
+  if (answer === 'login') {
     console.log('[Middleware] Redirecting to /login')
     const url = request.nextUrl.clone()
     url.pathname = '/login'

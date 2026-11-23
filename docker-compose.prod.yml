@@ -14,7 +14,7 @@
 #            the minimum above — and they exceed it. Do not size a limit from
 #            that number, and do not read the minimum as covering them.
 #
-# Services: ~15 containers (caddy, bloom-web, langchain-agent, bloommcp,
+# Services: ~15 containers (caddy, bloom-web, bloommcp,
 #   kong, auth, rest, realtime, minio, minio-init, storage, imgproxy,
 #   meta, db-prod, supavisor, studio, cloudflared in the `tunnel` profile)
 #
@@ -110,7 +110,6 @@ services:
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${ANON_KEY}
         NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
-        NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
     # Brings bloom-web back after a crash or an out-of-memory kill, like every
     # other long-running service here. (`docker kill` counts as a manual stop,
     # which this policy respects; it is not a test of it.)
@@ -151,7 +150,6 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
       NEXT_PUBLIC_SUPABASE_COOKIE_NAME: ${SUPABASE_COOKIE_NAME}
-      NEXT_PUBLIC_MCP_URL: ${NEXT_PUBLIC_MCP_URL}
       # Starting cylinder pipeline runs from Bloom; "true" in staging, "false" in
       # prod until it is provisioned (bloom#863). cyl-pipeline-worker reads it
       # too (web/lib/cyl-pipeline/trigger-enabled.ts, k8s_client.py).
@@ -189,65 +187,6 @@ services:
       start_period: 30s
     networks:
       - supanet
-
-  # -------------------
-  # LangChain Agent
-  # -------------------
-  langchain-agent:
-    build:
-      context: ./langchain
-      dockerfile: Dockerfile
-    read_only: true
-    tmpfs:
-      - /tmp
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    expose:
-      - "5002"
-    environment:
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
-      BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL: gpt-4o
-      BLOOM_MCP_URL: http://bloommcp:8811/mcp
-      BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
-      BLOOM_PLOTS_DIR: ${BLOOM_PLOTS_DIR}
-      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
-      # LANGCHAIN_POSTGRES_URL is derived inside the container from
-      # POSTGRES_USER/PASSWORD/HOST/PORT/DB (see langchain/agent.py). Not
-      # passed here to avoid a composition that spans the defaults/secrets split.
-      JWT_SECRET: ${JWT_SECRET}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_PORT: ${POSTGRES_PORT}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_USER: ${POSTGRES_USER}
-      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
-      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
-      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
-      LOCAL_LLM_URL: ${LOCAL_LLM_URL}
-      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL}
-      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
-      CORS_ORIGINS: ${CORS_ORIGINS}
-    volumes:
-      - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR
-    networks:
-      - supanet
-    healthcheck:
-      # Probe with python, not curl — curl is not installed in this image.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5002/health')"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    depends_on:
-      - kong
-      - bloommcp
-      - db-prod
-    restart: unless-stopped
-    command: ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "5002", "--workers", "4"]
 
   # -------------------
   # Workflows API
@@ -653,7 +592,7 @@ services:
     build:
       context: ./bloommcp
       dockerfile: Dockerfile
-    # read_file holds up to 3 plate scans (~0.7 GB at most) and the analysis tools load
+    # read_file holds up to 3 plate scans (~1.7 GB at most) and the analysis tools load
     # whole experiments. Equal values mean no swap: hit the ceiling and restart.
     mem_limit: 16g
     memswap_limit: 16g
@@ -672,18 +611,17 @@ services:
       # the internal kong host so they're usable by outside callers — mirrors
       # the workflows service's identical WORKFLOWS_PUBLIC_SUPABASE_URL below.
       BLOOM_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      # bloommcp authenticates to PostgREST + Storage as bloom_agent (the same
-      # JWT langchain-agent uses). SERVICE_ROLE_KEY is deliberately NOT passed
+      # bloommcp authenticates to PostgREST + Storage as bloom_agent.
+      # SERVICE_ROLE_KEY is deliberately NOT passed
       # in — bloommcp's storage access is gated by the bloom_agent RLS policies, and granting service_role would let a future code path silently bypass them.
       BLOOM_AGENT_KEY: ${BLOOM_AGENT_KEY}
       BLOOM_TRAITS_DIR: /app/data/TRAITS_DIR
       BLOOM_OUTPUT_DIR: /app/data/ANALYSIS_OUTPUT
       BLOOM_PLOTS_DIR: /app/data/PLOTS_DIR
-      BLOOM_PLOTS_URL: ${BLOOM_PLOTS_URL}
       BLOOMMCP_API_KEY: ${BLOOMMCP_API_KEY}
       # Verifies an optional X-Bloom-Identity header for usage tracking (#406)
-      # — never used as DB/Storage authority. Same secret GoTrue/PostgREST/
-      # langchain-agent already use; validated lazily (only if/when a request
+      # — never used as DB/Storage authority. Same secret GoTrue/PostgREST
+      # already use; validated lazily (only if/when a request
       # actually carries the header), so this has no effect until a client
       # sends that header.
       JWT_SECRET: ${JWT_SECRET}
@@ -700,8 +638,7 @@ services:
       # @numba.jit(cache=True); without this env var, numba tries to write
       # to site-packages/__pycache__/ and fails under read_only: true.
       # /tmp is tmpfs-mounted above, so /tmp/numba is writable. Only
-      # bloommcp needs this — bloom-web (Node.js) and langchain-agent
-      # (no numba imports; confirmed via grep of langchain/uv.lock) do not.
+      # bloommcp needs this — bloom-web (Node.js) does not.
       # Cache is ephemeral (tmpfs wipes on container restart), so the first
       # UMAP call after every restart re-JITs — acceptable for this deploy;
       # revisit with a named volume if restart-frequent.
@@ -713,6 +650,8 @@ services:
       # pays re-parse cost on every cold start. Redirecting to /tmp/pycache
       # restores the normal caching path.
       PYTHONPYCACHEPREFIX: /tmp/pycache
+      # matplotlib's font cache, kept in one writable place under read_only: true.
+      MPLCONFIGDIR: /tmp/matplotlib
     volumes:
       - ./bloommcp/data/TRAITS_DIR:/app/data/TRAITS_DIR
       - ./bloommcp/data/PLOTS_DIR:/app/data/PLOTS_DIR

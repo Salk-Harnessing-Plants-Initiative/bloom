@@ -21,6 +21,10 @@ const findOneVsRest = vi.hoisted(() =>
   ),
 );
 const fetchDeMarkers = vi.hoisted(() => vi.fn());
+vi.mock("@/components/gene-links", () => ({
+  useDatasetGeneLinks: () => (gene: string) => <a href={`/links/${gene}`}>links {gene}</a>,
+}));
+
 vi.mock("@/components/expression-lib/cluster-markers", () => ({
   fetchClusterStats, findOneVsRest, fetchDeMarkers,
 }));
@@ -99,6 +103,12 @@ describe("ExpressionClusterDetailPanel", () => {
     render(panel());
     await waitFor(() => expect(screen.getByText("PELPK1")).toBeTruthy());
     expect(screen.getByText("AT5G09530")).toBeTruthy();
+  });
+
+  it("links each marker to the genome browser and its orthologs", async () => {
+    fetchClusterStats.mockResolvedValue(STATS);
+    render(panel());
+    await waitFor(() => expect(screen.getByText("links AT5G09530")).toBeTruthy());
   });
 
   it("names the atlas only where a cell type's markers come from more than one", async () => {

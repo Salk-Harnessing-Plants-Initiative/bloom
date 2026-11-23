@@ -376,7 +376,8 @@ read_file with table cyl_images and those rows' ids. Skip experiments that are d
 (see list_tables notes).
 
 Images (PNG, JPEG, TIFF) come back as 8-bit PNG, with no compression loss beyond the
-8-bit reduction and scaling, the longer side at most {ic.MAX_SIDE} px. For detail,
+8-bit reduction and scaling, at the size you view them (the longer side at most
+{ic.MAX_SIDE} px and at most {ic.MAX_TOKENS} image tokens). For detail,
 read again with `crop`: the region comes at the original's full resolution unless
 image.scaled says otherwise; then ask for a smaller crop. Deeper-than-8-bit images are
 reduced from a fixed full scale of {ic.FULL_SCALE} (see image.full_scale and image.dim).

@@ -22,7 +22,7 @@ def image(width: int, height: int, fmt: str, value: int = 100) -> bytes:
     return out.getvalue()
 
 
-FRAME = image(2000, 1000, "PNG", 50)
+FRAME = image(4000, 2000, "PNG", 50)
 SMALL = image(100, 50, "PNG", 7)
 SITE = "https://bloom.example"
 SCAN_PAGE = f"{SITE}/app/phenotypes/1/2/3/4/10"

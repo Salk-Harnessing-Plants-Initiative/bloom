@@ -70,9 +70,9 @@ def link_note(name: str) -> str | None:
     notes = []
     if pattern := PAGE_LINKS.get(name):
         notes.append(
-            f"Bloom page for a row: {site}{pattern}, with each {{column}} filled from the "
-            "row (read those columns too). Give this link when you mention the row; give "
-            "none when any of those columns is empty."
+            f"Bloom page for a row: {site}{pattern}. query_table returns it as each "
+            "row's page_url; give it when you mention the row. A row with no page_url "
+            "has no page (one of those columns is empty)."
         )
     if name in TRAIT_FIGURE_SOURCES:
         notes.append(
@@ -81,6 +81,23 @@ def link_note(name: str) -> str | None:
             "say the user picks the trait there."
         )
     return " ".join(notes) or None
+
+
+def expression_page(dataset: dict[str, Any], genes: list[str]) -> str | None:
+    """A scRNA dataset's page opened on Genes by cell type for `genes`; None without SITE_URL
+    or a species. Without genes, the dataset's page as it opens."""
+    url = page_url("scrna_datasets", dataset)
+    if url is None or not genes:
+        return url
+    return f"{url}?tab=genes&gene={quote(','.join(genes), safe=',')}"
+
+
+def umap_page(dataset: dict[str, Any], gene: str | None) -> str | None:
+    """A scRNA dataset's UMAP tab, coloured by `gene` when given; None without SITE_URL."""
+    url = page_url("scrna_datasets", dataset)
+    if url is None:
+        return None
+    return f"{url}?tab=umap" + (f"&gene={quote(gene)}" if gene else "")
 
 
 def page_columns(name: str) -> list[str]:
@@ -101,6 +118,16 @@ def page_url(name: str, row: dict[str, Any]) -> str | None:
         **{c: quote(str(v), safe="") for c, v in values.items()}
     )
     return site + path
+
+
+def add_page_urls(name: str, rows: list[dict[str, Any]], keep: list[str]) -> None:
+    """Give each row its Bloom page as page_url, then drop columns not in `keep`."""
+    for row in rows:
+        url = page_url(name, row)
+        for column in [c for c in row if c not in keep]:
+            del row[column]
+        if url:
+            row["page_url"] = url
 
 
 def scan_pages(reader: Any, view: str, scan_ids: list) -> dict[Any, str]:

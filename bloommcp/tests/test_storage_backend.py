@@ -100,7 +100,6 @@ def test_server_import_is_pure_with_invalid_backend():
         "BLOOM_TRAITS_DIR",
         "BLOOM_OUTPUT_DIR",
         "BLOOM_PLOTS_DIR",
-        "BLOOM_PLOTS_URL",
         "BLOOM_STORAGE_LOCAL_ROOT",
     )
     env = {k: v for k, v in os.environ.items() if k not in bloom_vars}

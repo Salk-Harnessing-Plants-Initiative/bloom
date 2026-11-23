@@ -74,10 +74,9 @@ xdg-open htmlcov/index.html  # Linux
 
 1. **API endpoint smoke tests** — all services respond to health checks
 2. **Supabase connection tests** — database connectivity, RLS policies
-3. **LangGraph agent endpoints** — FastAPI routes in `langchain/`
-4. **FastMCP server endpoints** — data analysis endpoints in `bloommcp/`
-5. **Docker health check verification** — all 16 services start and report healthy
-6. **MinIO/storage operations** — bucket creation, presigned URLs
+3. **FastMCP server endpoints** — data analysis endpoints in `bloommcp/`
+4. **Docker health check verification** — all 16 services start and report healthy
+5. **MinIO/storage operations** — bucket creation, presigned URLs
 
 ## CI Context
 

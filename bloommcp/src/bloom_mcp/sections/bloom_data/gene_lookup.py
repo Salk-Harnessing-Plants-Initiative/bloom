@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_mcp.contract import as_mcp_tool
 from bloom_mcp.data_access import gene_expression, gene_reads
-from bloom_mcp.data_access.page_links import PAGE_LINKS
+from bloom_mcp.data_access.page_links import expression_page
 from bloom_mcp.tools import _ports
 
 from ._common import fix_request, logs_call, reports_lookup_errors
@@ -80,7 +80,9 @@ class TranslationLine(BaseModel):
     modification: str | None
 
 
-_LOG2FC = "None when infinite: the gene is absent from one group (absent_in_one_group)."
+_LOG2FC = "None when infinite: the gene was found in one group only."
+_ONE_GROUP = "An infinite log2FC: the gene was found in one group only."
+_LIKELY_ONE_GROUP = "|log2FC| above 20: almost certainly found in one group only."
 
 
 class Marker(BaseModel):
@@ -88,9 +90,10 @@ class Marker(BaseModel):
     cell_type: str | None
     label_source: str | None
     log2fc: float | None = Field(description=_LOG2FC)
-    absent_in_one_group: bool
+    found_in_one_group_only: bool = Field(description=_ONE_GROUP)
+    likely_found_in_one_group_only: bool = Field(description=_LIKELY_ONE_GROUP)
     fdr: float
-    pct_in_cluster: float | None = Field(
+    pct_in_cell_type: float | None = Field(
         description="Share of the cluster's cells, 0–1."
     )
     pct_elsewhere: float | None = Field(description="Share of the other cells, 0–1.")
@@ -109,8 +112,9 @@ class GenotypeComparison(BaseModel):
     group2: str | None
     log2fc: float | None = Field(description=_LOG2FC)
     fdr: float
-    direction: str = Field(description="up or down in group1.")
-    absent_in_one_group: bool
+    higher_in: str | None = Field(description="The group the gene is higher in.")
+    found_in_one_group_only: bool = Field(description=_ONE_GROUP)
+    likely_found_in_one_group_only: bool = Field(description=_LIKELY_ONE_GROUP)
 
 
 class DatasetHit(BaseModel):
@@ -148,9 +152,11 @@ def _site() -> str:
 
 
 def _dataset_link(site: str, dataset: dict[str, Any]) -> str | None:
-    if not site or dataset.get("species_id") is None:
+    """The dataset's page, opened on the gene's expression when the dataset measured it."""
+    if not site:
         return None
-    return site + PAGE_LINKS["scrna_datasets"].format(**dataset)
+    gene = dataset.get("gene_name")
+    return expression_page(dataset, [gene] if gene else [])
 
 
 def _links(site: str, genes: list[dict[str, Any]], query: str) -> Links:
@@ -259,8 +265,10 @@ def gene_lookup(params: GeneLookupParams) -> GeneLookupResult:
     analysis. A cluster's panel on the website lists only its top 25 markers; when
     on_cluster_panel is false, say the gene is a marker but ranks outside that top 25, and
     that the full list is in the dataset page's differential expression results. Genotype
-    comparisons combine the analyses as that page does. Give the links: dataset pages, the
-    Genes page for HPI notes, and the OrthoBrowser for orthologs.
+    comparisons combine the analyses as that page does. Give the links: dataset pages (each
+    opens the plot of the gene's expression), the Genes page for HPI notes, and the
+    OrthoBrowser for orthologs. For how much the gene is expressed in each cell type of a
+    dataset, call gene_expression with the dataset's id.
 
     Lead with what Bloom has. You may add what you know about the gene and look up papers
     on it, especially from Salk's Harnessing Plants Initiative (HPI); label all of that as

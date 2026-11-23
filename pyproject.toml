@@ -11,10 +11,8 @@ requires-python = ">=3.11"
 test = [
     "pytest>=8.3,<9",
     "psycopg[binary]==3.3.3",
-    # required by tests/integration/* — they sys.path-import langchain agent
-    # and bloommcp modules and need these resolvable at collection time.
-    "langchain-core>=0.3.0",
-    "langgraph>=0.2.0",
+    # required by tests/integration/* — they sys.path-import bloommcp modules
+    # and need this resolvable at collection time.
     "pydantic>=2.0.0",
     # required by tests/unit/test_ingest_scrnaseq.py — the ingest script reads
     # .h5ad files, and the tests build real ones to exercise its refusals.
@@ -25,10 +23,6 @@ test = [
     # required by tests/unit/test_ci_workflow_uv_conventions.py — parses
     # .github/workflows/*.{yml,yaml} via yaml.safe_load to enforce uv conventions.
     "pyyaml>=6",
-    # imported at module-level in langchain/helpers/plot_renderer.py and
-    # langchain/tools/cyl_viz_tools.py, both transitively pulled in when
-    # tests import from langchain.tools.cyl_tools.
-    "matplotlib>=3.8",
     # required by tests/unit/test_supabase_client.py — the bloommcp helper
     # under test imports both at module level.
     "pandas>=2.0",

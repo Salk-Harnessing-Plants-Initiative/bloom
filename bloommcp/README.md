@@ -28,6 +28,11 @@ Installable `uv` package under `src/bloom_mcp/`:
   read-only transaction. `gene_lookup` gathers one gene's record, HPI notes, orthologs,
   translation work and scRNA results (datasets, cluster markers, genotype comparisons)
   through the same allow-list (`data_access/gene_reads.py`, `gene_expression.py`).
+  `scrna_de` reads one scRNA dataset's cell-type markers (as the cluster panel lists them)
+  and genotype DE (at the DE tab's default cuts), with links to both
+  (`data_access/scrna_de_reads.py`, `cluster_panel.py`, `de_choice.py`).
+  `scrna_gene_cells` lists one gene's expressing cells with cell type, genotype, replicate
+  and UMAP position, highest first, in pages (`gene_cells.py`, `_scrna_dataset.py`).
 - `bloom_mcp.tools` — shared helpers only (`_ports`, `_qc_shared`, `_consumer_utils`),
   not tools themselves
 - `bloom_mcp.manifest` — versioned, append-only analysis-artifact manifest/bookkeeping
@@ -68,14 +73,14 @@ which sets `X-Bloom-Tunnel` to `BLOOMMCP_TUNNEL_SECRET` and passes on AIRC's sig
 What this trusts: AIRC's signature on the JWT, and Caddy's tunnel entrance, which only Caddy and
 bloommcp hold the secret for and which accepts only cloudflared's fixed address.
 
-| Variable | Purpose |
-| --- | --- |
-| `BLOOMMCP_TUNNEL_SECRET` | Turns the tunnel path on. At least 32 characters, and needs `BLOOMMCP_API_KEY`; startup fails otherwise. Unset (dev, CI): off. |
-| `BLOOMMCP_TUNNEL_JWKS_URL` | AIRC's public keys for this environment's JWTs. Required with the secret. |
-| `BLOOMMCP_TUNNEL_JWT_ISSUER` / `BLOOMMCP_TUNNEL_JWT_AUDIENCE` | The `iss` and `aud` the JWT must carry (`bloom-mcp`; `bloom-staging` or `bloom-prod`). Required with the secret. |
-| `BLOOMMCP_TUNNEL_JWKS_FILE` | A local keys file used instead of the URL, for CI and tests only. |
-| `MAIL_SERVICE_URL` / `MAIL_SERVICE_SECRET` | The internal mail service and its caller secret, for the sign-up email. Either unset: no email. |
-| `SITE_URL` | Bloom's address, named in the "create an account" refusal and used for the Bloom page links the data tools give Claude. Unset: no page links. |
+| Variable                                                      | Purpose                                                                                                                                       |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BLOOMMCP_TUNNEL_SECRET`                                      | Turns the tunnel path on. At least 32 characters, and needs `BLOOMMCP_API_KEY`; startup fails otherwise. Unset (dev, CI): off.                |
+| `BLOOMMCP_TUNNEL_JWKS_URL`                                    | AIRC's public keys for this environment's JWTs. Required with the secret.                                                                     |
+| `BLOOMMCP_TUNNEL_JWT_ISSUER` / `BLOOMMCP_TUNNEL_JWT_AUDIENCE` | The `iss` and `aud` the JWT must carry (`bloom-mcp`; `bloom-staging` or `bloom-prod`). Required with the secret.                              |
+| `BLOOMMCP_TUNNEL_JWKS_FILE`                                   | A local keys file used instead of the URL, for CI and tests only.                                                                             |
+| `MAIL_SERVICE_URL` / `MAIL_SERVICE_SECRET`                    | The internal mail service and its caller secret, for the sign-up email. Either unset: no email.                                               |
+| `SITE_URL`                                                    | Bloom's address, named in the "create an account" refusal and used for the Bloom page links the data tools give Claude. Unset: no page links. |
 
 ## Development
 

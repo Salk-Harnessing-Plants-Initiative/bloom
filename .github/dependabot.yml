@@ -19,16 +19,6 @@ updates:
       - "dependencies"
       - "docker"
 
-  # Docker base images (langchain-agent)
-  - package-ecosystem: "docker"
-    directory: "/langchain"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 0
-    labels:
-      - "dependencies"
-      - "docker"
-
   # Docker base images (bloommcp)
   - package-ecosystem: "docker"
     directory: "/bloommcp"
@@ -58,16 +48,6 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
-
-  # Python dependencies (langchain)
-  - package-ecosystem: "uv"
-    directory: "/langchain"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 0
-    labels:
-      - "dependencies"
-      - "python"
 
   # Python dependencies (bloommcp)
   - package-ecosystem: "uv"
