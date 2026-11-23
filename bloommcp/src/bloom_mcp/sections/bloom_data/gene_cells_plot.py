@@ -121,11 +121,17 @@ def group_umap(
         none, none_name = umap_groups.NO_VALUE, expression_stats.NOT_RECORDED
         if not names:
             notes.append(f"No cell records a {color_by}, so every cell is grey.")
+        # Colours alone can't tell this many apart, and the names aren't on the map.
+        if len(names) > umap.MAX_GROUPS:
+            return None, notes + [
+                f"{len(names):,} {PLURAL[color_by]}, more than the {umap.MAX_GROUPS} one "
+                "picture can colour, so there is no plot."
+            ]
     if len(names) > umap.MAX_GROUPS:
-        return None, notes + [
-            f"{len(names):,} {PLURAL[color_by]}, more than the {umap.MAX_GROUPS} one "
-            "picture can colour, so there is no plot."
-        ]
+        notes.append(
+            f"{len(names):,} {PLURAL[color_by]}, too many for a legend; "
+            "their names are written on the map."
+        )
     image, reasons = _image(
         lambda: umap.group_figure(
             m.x,

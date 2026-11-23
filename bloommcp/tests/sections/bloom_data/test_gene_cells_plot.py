@@ -303,3 +303,29 @@ def test_as_many_groups_as_the_cap_still_draws(expression_db):
         tool.scrna_gene_cells({"dataset_id": 3, "color_by": "replicate"})
     )
     assert image.size == (1200, 900)
+
+
+def test_more_cell_types_than_the_cap_still_draw_with_no_legend(expression_db, grouped):
+    reader, _ = expression_db
+    n = gene_cells_plot.umap.MAX_GROUPS + 1
+    reader.tables["scrna_clusters"] = [
+        {"id": i + 1, "dataset_id": 3, "cluster_id": str(i), "name": f"type {i}",
+         "source": None, "ordinal": i, "color": None}
+        for i in range(n)
+    ]  # fmt: skip
+    function, _cells = reader.function_rows["scrna_cell_arrays"]
+    many = [
+        {"x": float(i), "y": 0.0, "cluster_ordinal": i, "genotype": None,
+         "replicate": None, "facets": None}
+        for i in range(n)
+    ]  # fmt: skip
+    reader.function_rows["scrna_cell_arrays"] = (function, many)
+    result, [image] = _split(
+        tool.scrna_gene_cells({"dataset_id": 3, "color_by": "cell_type"})
+    )
+    assert image.size == (1200, 900) and len(grouped["names"]) == n
+    assert not any("one picture can colour" in note for note in result.notes)
+    assert (
+        "51 cell types, too many for a legend; their names are written on the map."
+        in result.notes
+    )

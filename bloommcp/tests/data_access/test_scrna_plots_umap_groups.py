@@ -145,3 +145,12 @@ def test_the_map_leaves_room_for_the_legend():
     fig = _figure([0, 1], [(1, 0, 0), (0, 0, 1)])
     [ax] = [a for a in fig.axes if a.get_label() == umap.MAP_AXES]
     assert ax.get_position().x1 <= umap.MAP_RIGHT
+
+
+def test_past_the_cap_there_is_no_legend():
+    n = umap.MAX_GROUPS + 1
+    fig = _figure(
+        np.arange(n), umap_groups.palette(n), names=[f"t{i}" for i in range(n)]
+    )
+    [ax] = [a for a in fig.axes if a.get_label() == umap.MAP_AXES]
+    assert ax.get_legend() is None

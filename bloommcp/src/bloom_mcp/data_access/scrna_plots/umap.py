@@ -29,8 +29,8 @@ LABEL_FONT, LEGEND_FONT = 9, 8
 # A group UMAP's map ends here (a fraction of the width); its legend fills the rest.
 MAP_RIGHT = 0.58
 _GROUP_MAP = (0.02, 0.04, MAP_RIGHT - 0.02, 0.88)
-# Most groups one picture colours, the legend rows per column and the longest name shown
-# in one column (half that in two), so that the legend fits inside the image.
+# Most groups a legend lists, the legend rows per column and the longest name shown in
+# one column (half that in two), so that the legend fits inside the image.
 MAX_GROUPS = 50
 LEGEND_ROWS = 26
 LEGEND_CHARS = 40
@@ -136,8 +136,8 @@ def group_figure(
 ) -> Figure:
     """The UMAP with each cell in its group's colour, in stored cell order, with a legend;
     `groups` index `colours` and `group_names` (-1: `none_colour`). Cell-type names are
-    written on the map from `label_codes`. The legend fits beside the map for up to
-    MAX_GROUPS groups."""
+    written on the map from `label_codes`. The legend sits beside the map; past
+    MAX_GROUPS groups there is none."""
     fig, ax = _axes(title, _GROUP_MAP)
     lit = np.ones(len(x), dtype=bool) if focus is None else focus
     if focus is not None:
@@ -147,6 +147,13 @@ def group_figure(
     entries = [(name, (*colour, 1.0)) for name, colour in zip(group_names, colours)]
     if none_name and (groups == -1).any():
         entries.append((none_name, tuple(none_colour)))
+    if len(group_names) <= MAX_GROUPS:
+        _legend(ax, entries)
+    _labels(ax, x, y, label_codes, label_names, focus)
+    return fig
+
+
+def _legend(ax: Axes, entries: list[tuple[str, tuple[float, ...]]]) -> None:
     columns = max(1, math.ceil(len(entries) / LEGEND_ROWS))
     handles = [
         Line2D(
@@ -172,5 +179,3 @@ def group_figure(
     )
     for text in legend.get_texts():
         text.set_color(TEXT)
-    _labels(ax, x, y, label_codes, label_names, focus)
-    return fig
