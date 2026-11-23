@@ -5,6 +5,8 @@ the named cell types first in faint grey."""
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from matplotlib import colormaps
 from matplotlib.axes import Axes
@@ -23,12 +25,26 @@ POINT_SIZE = (4 * 72 / _png.DPI) ** 2
 MAP_AXES = "umap"
 OUTSIDE, ZERO, EXPRESSING, GROUPS = "outside", "zero", "expressing", "groups"
 VIRIDIS = colormaps["viridis"]
+LABEL_FONT, LEGEND_FONT = 9, 8
+# A group UMAP's map ends here (a fraction of the width); its legend fills the rest.
+MAP_RIGHT = 0.58
+_GROUP_MAP = (0.02, 0.04, MAP_RIGHT - 0.02, 0.88)
+# Most groups one picture colours, the legend rows per column and the longest name shown
+# in one column (half that in two), so that the legend fits inside the image.
+MAX_GROUPS = 50
+LEGEND_ROWS = 26
+LEGEND_CHARS = 40
 
 
-def _axes(title: str) -> tuple[Figure, Axes]:
+def _axes(
+    title: str, rect: tuple[float, float, float, float] | None = None
+) -> tuple[Figure, Axes]:
     fig = _png.new_figure()
     fig.set_facecolor(GROUND)
-    ax = fig.add_subplot(label=MAP_AXES)
+    if rect is None:
+        ax = fig.add_subplot(label=MAP_AXES)
+    else:
+        ax = fig.add_axes(rect, label=MAP_AXES)
     ax.set_facecolor(GROUND)
     ax.set_aspect("equal", adjustable="datalim")
     ax.set_xticks([])
@@ -56,8 +72,22 @@ def _labels(
         x, y, codes, len(names), shown
     ).items():
         ax.text(
-            ax_x, ax_y, names[level], color=TEXT, ha="center", va="center", fontsize=9
+            ax_x,
+            ax_y,
+            names[level],
+            color=TEXT,
+            ha="center",
+            va="center",
+            fontsize=LABEL_FONT,
         )
+
+
+def _short(name: str, limit: int) -> str:
+    """`name` cut in the middle to `limit` characters, keeping its start and end."""
+    if len(name) <= limit:
+        return name
+    head = (limit - 1) // 2
+    return name[:head] + "…" + name[len(name) - (limit - 1 - head) :]
 
 
 def gene_figure(
@@ -103,8 +133,9 @@ def group_figure(
 ) -> Figure:
     """The UMAP with each cell in its group's colour, in stored cell order, with a legend;
     `groups` index `colours` and `group_names` (-1: `none_colour`). Cell-type names are
-    written on the map from `label_codes`."""
-    fig, ax = _axes(title)
+    written on the map from `label_codes`. The legend fits beside the map for up to
+    MAX_GROUPS groups."""
+    fig, ax = _axes(title, _GROUP_MAP)
     lit = np.ones(len(x), dtype=bool) if focus is None else focus
     if focus is not None:
         _points(ax, x[~lit], y[~lit], [FOCUS_GREY], OUTSIDE)
@@ -113,16 +144,28 @@ def group_figure(
     entries = [(name, (*colour, 1.0)) for name, colour in zip(group_names, colours)]
     if none_name and (groups == -1).any():
         entries.append((none_name, tuple(none_colour)))
+    columns = max(1, math.ceil(len(entries) / LEGEND_ROWS))
     handles = [
-        Line2D([], [], marker="o", linestyle="", color=c, label=n) for n, c in entries
+        Line2D(
+            [],
+            [],
+            marker="o",
+            linestyle="",
+            color=c,
+            label=_short(n, LEGEND_CHARS // columns),
+        )
+        for n, c in entries
     ]
     legend = ax.legend(
         handles=handles,
         loc="upper left",
-        bbox_to_anchor=(1.01, 1.0),
+        bbox_to_anchor=(1.02, 1.0),
         frameon=False,
-        fontsize=8,
-        ncol=max(1, len(handles) // 30 + 1),
+        fontsize=LEGEND_FONT,
+        ncol=columns,
+        handlelength=1.0,
+        handletextpad=0.4,
+        columnspacing=1.0,
     )
     for text in legend.get_texts():
         text.set_color(TEXT)

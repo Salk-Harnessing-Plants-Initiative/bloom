@@ -7,6 +7,7 @@ import colorsys
 
 import numpy as np
 import pytest
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import to_rgb
 
 from bloom_mcp.data_access.scrna_plots import umap, umap_groups
@@ -96,3 +97,51 @@ def test_greys_are_the_websites():
     assert umap_groups.MISSING_COLOUR == (0.5, 0.5, 0.5)
     assert umap_groups.NO_CELL_TYPE_COLOUR == (0.6, 0.6, 0.6)
     assert umap_groups.NO_VALUE == (0.45, 0.45, 0.48, 0.3)
+
+
+def _legend_box(names):
+    n = len(names)
+    fig = _figure(np.arange(n) % n, umap_groups.palette(n), names=names)
+    FigureCanvasAgg(fig).draw()
+    [ax] = [a for a in fig.axes if a.get_label() == umap.MAP_AXES]
+    legend = ax.get_legend()
+    return (
+        fig.bbox,
+        legend.get_window_extent(),
+        [t.get_text() for t in legend.get_texts()],
+    )
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        [f"Phellem suberized cell type {i}" for i in range(12)],
+        [f"MWMWMWMWMWMWMWMWMWMWMWMWMWMWMW {i:02d}" for i in range(umap.MAX_GROUPS)],
+        ["MW" * 30 for _ in range(umap.LEGEND_ROWS)],
+        ["MW" * 30 for _ in range(umap.MAX_GROUPS)],
+    ],
+)
+def test_the_legend_fits_inside_the_image(names):
+    image, legend, _ = _legend_box(names)
+    assert (legend.x0, legend.y0) >= (0, 0)
+    assert legend.x1 <= image.x1 and legend.y1 <= image.y1
+
+
+def test_names_fit_one_column_whole_and_long_ones_keep_both_ends():
+    whole = "Phellem suberized cell type 1"
+    _, _, shown = _legend_box([whole, "a" * 30 + "b" * 30])
+    assert shown[0] == whole
+    assert shown[1] == "a" * 19 + "…" + "b" * 20
+
+
+def test_two_columns_cut_names_to_half():
+    names = [f"pFACT::MYB41 x Col-0 line {i:02d}" for i in range(umap.LEGEND_ROWS + 1)]
+    _, _, shown = _legend_box(names)
+    assert shown[0] == "pFACT::MY…-0 line 00"
+    assert {len(s) for s in shown} == {umap.LEGEND_CHARS // 2}
+
+
+def test_the_map_leaves_room_for_the_legend():
+    fig = _figure([0, 1], [(1, 0, 0), (0, 0, 1)])
+    [ax] = [a for a in fig.axes if a.get_label() == umap.MAP_AXES]
+    assert ax.get_position().x1 <= umap.MAP_RIGHT
