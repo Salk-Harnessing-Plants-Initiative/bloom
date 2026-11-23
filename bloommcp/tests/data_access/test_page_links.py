@@ -148,3 +148,14 @@ def test_the_expression_page_opens_on_the_genes_named(monkeypatch):
     assert page_links.expression_page({"id": 3, "species_id": None}, ["G"]) is None
     monkeypatch.delenv("SITE_URL")
     assert page_links.expression_page(dataset, ["G"]) is None
+
+
+def test_the_umap_page_is_coloured_by_the_gene_named(monkeypatch):
+    monkeypatch.setenv("SITE_URL", "https://bloom.example/")
+    dataset = {"id": 3, "species_id": 16}
+    base = "https://bloom.example/app/expression/16/3?tab=umap"
+    assert page_links.umap_page(dataset, "AT4G28110") == base + "&gene=AT4G28110"
+    assert page_links.umap_page(dataset, "a b&c").endswith("gene=a%20b%26c")
+    assert page_links.umap_page(dataset, None) == base
+    monkeypatch.delenv("SITE_URL")
+    assert page_links.umap_page(dataset, "G") is None

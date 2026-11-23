@@ -15,6 +15,8 @@ def test_every_data_tool_is_marked_read_only():
         "bloom_data_count_rows",
         "bloom_data_read_file",
         "bloom_data_scrna_de",
+        "bloom_data_gene_expression",
+        "bloom_data_scrna_gene_cells",
     ]
     for name in names:
         hints = tools[name].annotations

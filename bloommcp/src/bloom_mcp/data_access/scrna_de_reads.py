@@ -53,15 +53,16 @@ def cell_types(reads: Reads, dataset_id: int, wanted: list[str]) -> CellTypes:
     if keys:
         given = {w.strip().casefold(): w.strip() for w in reversed(wanted)}
         found.unknown = [
-            given[k] for k in keys if not any(_named(c, k) for c in clusters)
+            given[k] for k in keys if not any(is_named(c, k) for c in clusters)
         ]
-        clusters = [c for c in clusters if any(_named(c, k) for k in keys)]
+        clusters = [c for c in clusters if any(is_named(c, k) for k in keys)]
     found.chosen = clusters[:MAX_CELL_TYPES]
     found.left_out = clusters[MAX_CELL_TYPES:]
     return found
 
 
-def _named(cluster: dict[str, Any], key: str) -> bool:
+def is_named(cluster: dict[str, Any], key: str) -> bool:
+    """Whether the cluster's id or name, trimmed and in any case, is `key` (casefolded)."""
     names = (cluster["cluster_id"], cluster.get("name"))
     return any(n is not None and n.strip().casefold() == key for n in names)
 

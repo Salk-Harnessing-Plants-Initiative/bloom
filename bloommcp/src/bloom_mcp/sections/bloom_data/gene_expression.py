@@ -13,17 +13,13 @@ from bloom_mcp.data_access.page_links import expression_page
 from bloom_mcp.data_access.table_ports import Filter
 from bloom_mcp.tools import _ports
 
+from . import _scrna_dataset
 from ._common import fix_request, logs_call, reports_lookup_errors
 from ._page import MAX_REPLY_CHARS
 
 MAX_GENES = 5
-# Most cells read per dataset, ~6x prod's biggest (32,522 on 2026-11-17); past it, the link only.
-MAX_CELLS = 200_000
 # Decimal places kept in the statistics: plenty for log-normalised values, short replies.
 DIGITS = 4
-# A dataset kind with no cells of its own (the website treats it as not found).
-REFERENCE_KIND = "reference"
-CELL_ARRAYS = "scrna_cell_arrays"
 
 
 class GeneExpressionParams(BaseModel):
@@ -84,50 +80,6 @@ class GeneExpressionResult(BaseModel):
     notes: list[str] = Field(description="Genes matched but not read in this call.")
 
 
-def _dataset(reads: gene_reads.Reads, dataset_id: int) -> dict[str, Any]:
-    found = reads.rows(
-        "scrna_datasets",
-        [Filter("id", "eq", dataset_id), Filter("deleted_at", "is_null", True)],
-    )
-    if not found:
-        raise fix_request(
-            f"No scRNA dataset {dataset_id}.",
-            "Use a dataset id from the gene lookup or scrna_datasets.",
-        )
-    if found[0].get("kind") == REFERENCE_KIND:
-        raise fix_request(
-            f"Dataset {dataset_id} is a reference atlas with no cells of its own.",
-            "Use one of the datasets the gene lookup lists for the gene.",
-        )
-    return found[0]
-
-
-def _cells(dataset_id: int) -> list[dict[str, Any]]:
-    cells = _ports.table_reader().call(
-        CELL_ARRAYS, {"ds_id": dataset_id}, [], MAX_CELLS + 1, 0
-    )
-    if len(cells) > MAX_CELLS:
-        raise fix_request(
-            f"Dataset {dataset_id} has over {MAX_CELLS:,} cells, more than this tool reads.",
-            "Give the user the dataset's page link to see the genes there.",
-        )
-    return cells
-
-
-def _matches(
-    reads: gene_reads.Reads, dataset_id: int, name: str
-) -> list[dict[str, Any]]:
-    """The dataset's genes `name` names: exact names first, else any case."""
-    in_dataset = Filter("dataset_id", "eq", dataset_id)
-    names = gene_reads.scrna_names(reads, name)
-    found = reads.rows("scrna_genes", [in_dataset, Filter("gene_name", "in", names)])
-    if not found:
-        found = reads.rows(
-            "scrna_genes", [in_dataset, Filter("gene_name", "iequals", name)]
-        )
-    return sorted(found, key=lambda g: g["gene_name"])
-
-
 def _read_at_most(
     reads: gene_reads.Reads, dataset_id: int, names: list[str]
 ) -> tuple[list[tuple[str, dict[str, Any] | None]], list[str]]:
@@ -136,7 +88,7 @@ def _read_at_most(
     picked: list[tuple[str, dict[str, Any] | None]] = []
     left_out: list[str] = []
     for name in names:
-        matches = _matches(reads, dataset_id, name)
+        matches = _scrna_dataset.matches(reads, dataset_id, name)
         if not matches:
             picked.append((name, None))
         read = {gene["id"] for _, gene in picked if gene is not None}
@@ -181,22 +133,8 @@ def _expression(
     cell_count: int,
     groups: list[expression_stats.CellGroup],
 ) -> GeneExpression:
-    counts = reads.rows(
-        "scrna_counts",
-        [Filter("dataset_id", "eq", dataset_id), Filter("gene_id", "eq", gene["id"])],
-    )
-    path = next(
-        (c["counts_object_path"] for c in counts if c.get("counts_object_path")), None
-    )
-    if path is None:
-        return GeneExpression(
-            requested=requested,
-            gene_name=gene["gene_name"],
-            groups=[],
-            note="This dataset stores no expression for this gene.",
-        )
     try:
-        values = expression_counts.gene_values(_ports.file_reader(), path, cell_count)
+        values = _scrna_dataset.gene_values(reads, dataset_id, gene, cell_count)
     except expression_counts.CountsProblem as problem:
         return GeneExpression(
             requested=requested,
@@ -229,14 +167,15 @@ def gene_expression(params: GeneExpressionParams) -> GeneExpressionResult:
     it for "where is this gene expressed?" or "is it higher in the transgene?". Find the
     datasets that measured a gene with the gene lookup. Answer with the numbers and give
     the user page_url to see the plot. A gene with no numbers says why in its note. At most
-    5 genes are read per call; notes name any other matches.
+    5 genes are read per call; notes name any other matches. For a gene's value in each
+    cell (where on the UMAP, which replicate), use bloom_data_scrna_gene_cells.
     """
     requested = [g.strip() for g in params.genes if g.strip()]
     if not requested:
         raise fix_request("Give at least one gene name.", "For example AT4G28110.")
     reads = gene_reads.Reads(_ports.table_reader())
-    dataset = _dataset(reads, params.dataset_id)
-    cells = _cells(params.dataset_id)
+    dataset = _scrna_dataset.dataset(reads, params.dataset_id)
+    cells = _scrna_dataset.cells(params.dataset_id)
     clusters = reads.rows(
         "scrna_clusters", [Filter("dataset_id", "eq", params.dataset_id)]
     )

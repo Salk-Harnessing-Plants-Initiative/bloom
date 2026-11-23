@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from typing import Literal
 
 # Images in progress across all calls; each holds an original and its pixels in memory.
@@ -30,14 +30,19 @@ def deadline() -> float:
 
 
 @contextmanager
-def image_slot(call_deadline: float) -> Iterator[None]:
-    """Holds one slot for one image's download and conversion; raises NoSlot."""
+def slot(slots: threading.BoundedSemaphore, call_deadline: float) -> Iterator[None]:
+    """Holds one of `slots`, waiting at most SLOT_WAIT_SECONDS; raises NoSlot."""
     remaining = call_deadline - time.monotonic()
     if remaining <= 0:
         raise NoSlot("time")
-    if not _slots.acquire(timeout=min(SLOT_WAIT_SECONDS, remaining)):
+    if not slots.acquire(timeout=min(SLOT_WAIT_SECONDS, remaining)):
         raise NoSlot("time" if time.monotonic() >= call_deadline else "busy")
     try:
         yield
     finally:
-        _slots.release()
+        slots.release()
+
+
+def image_slot(call_deadline: float) -> AbstractContextManager[None]:
+    """Holds one slot for one image's download and conversion; raises NoSlot."""
+    return slot(_slots, call_deadline)
