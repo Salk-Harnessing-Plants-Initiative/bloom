@@ -24,6 +24,9 @@ export function clusterExpression(
   cellOrdinals: readonly number[],
   clusters: readonly Cluster[],
 ): ClusterRow[] {
+  if (values.length !== cellOrdinals.length) {
+    throw new Error(`The gene has ${values.length} values for the dataset's ${cellOrdinals.length} cells.`);
+  }
   const types = cellTypes(clusters.map((c) => ({ ...c, color: null })));
   const byOrdinal = new Map(clusters.map((c) => [c.ordinal, c]));
   const groups = groupCells(
@@ -33,12 +36,12 @@ export function clusterExpression(
   );
   return groups.map((group) => {
     const stats = groupStats(values, group.cells)!;
-    // A group's cells all share one cluster; names repeat, so the cluster is read from its cells.
+    // groupCells groups by ordinal and drops empty groups; names repeat, so read the cluster from a cell.
     const cluster = byOrdinal.get(cellOrdinals[group.cells[0]]);
     return {
       ordinal: cluster?.ordinal ?? null,
       cluster_id: cluster?.cluster_id ?? null,
-      name: cluster?.name ?? null,
+      name: cluster?.name || null,
       cells: stats.n,
       expressing: stats.expressing,
       share: stats.share,

@@ -1,20 +1,76 @@
 {
-  "about": "Shared by web (cluster-expression.test.ts) and bloommcp (test_expression_stats.py): both must give these numbers. Clusters 0 and 1 share a predicted name and stay separate; cell 5 is in no known cluster.",
+  "about": "Shared by web (cluster-expression.test.ts) and bloommcp (test_expression_stats.py): both must give these numbers, means within 1e-6 (the web keeps values as 32-bit floats). Clusters 0 and 1 share a predicted name and stay separate; cluster 3 shares it too but has no cells and is left out; cell 5 is in no known cluster.",
   "cell_count": 6,
   "clusters": [
-    { "ordinal": 0, "cluster_id": "0", "name": "Cortex" },
-    { "ordinal": 1, "cluster_id": "1", "name": "Cortex" },
-    { "ordinal": 2, "cluster_id": "2", "name": null }
+    {
+      "ordinal": 0,
+      "cluster_id": "0",
+      "name": "Cortex"
+    },
+    {
+      "ordinal": 1,
+      "cluster_id": "1",
+      "name": "Cortex"
+    },
+    {
+      "ordinal": 2,
+      "cluster_id": "2",
+      "name": null
+    },
+    {
+      "ordinal": 3,
+      "cluster_id": "3",
+      "name": "Cortex"
+    }
   ],
-  "cell_ordinals": [0, 0, 1, 1, 2, 255],
+  "cell_ordinals": [
+    0,
+    0,
+    1,
+    1,
+    2,
+    255
+  ],
   "count_files": {
-    "object": "{\"0\": 1.5, \"2\": 3, \"4\": 0.5}",
-    "list": "[{\"0\": 1.5}, {\"2\": 3}, {\"4\": 0.5}]"
+    "object": "{\"0\": 1.5, \"2\": 3, \"4\": 1.62}",
+    "list": "[{\"0\": 1.5}, {\"2\": 3}, {\"4\": 1.62}]"
   },
   "expected": [
-    { "ordinal": 0, "cluster_id": "0", "name": "Cortex", "cells": 2, "expressing": 1, "share": 0.5, "mean": 0.75 },
-    { "ordinal": 1, "cluster_id": "1", "name": "Cortex", "cells": 2, "expressing": 1, "share": 0.5, "mean": 1.5 },
-    { "ordinal": 2, "cluster_id": "2", "name": null, "cells": 1, "expressing": 1, "share": 1, "mean": 0.5 },
-    { "ordinal": null, "cluster_id": null, "name": null, "cells": 1, "expressing": 0, "share": 0, "mean": 0 }
+    {
+      "ordinal": 0,
+      "cluster_id": "0",
+      "name": "Cortex",
+      "cells": 2,
+      "expressing": 1,
+      "share": 0.5,
+      "mean": 0.75
+    },
+    {
+      "ordinal": 1,
+      "cluster_id": "1",
+      "name": "Cortex",
+      "cells": 2,
+      "expressing": 1,
+      "share": 0.5,
+      "mean": 1.5
+    },
+    {
+      "ordinal": 2,
+      "cluster_id": "2",
+      "name": null,
+      "cells": 1,
+      "expressing": 1,
+      "share": 1,
+      "mean": 1.62
+    },
+    {
+      "ordinal": null,
+      "cluster_id": null,
+      "name": null,
+      "cells": 1,
+      "expressing": 0,
+      "share": 0,
+      "mean": 0
+    }
   ]
 }
