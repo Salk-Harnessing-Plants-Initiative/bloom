@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
+from bloom_mcp.data_access import expression_counts as ec
 from bloom_mcp.data_access import expression_stats as es
 
 _WEB_LIB = Path(__file__).resolve().parents[3] / "web" / "components" / "expression-lib"
@@ -106,3 +108,31 @@ def test_quartiles_interpolate_as_the_website_does():
 
 def test_a_group_with_no_cells_has_no_stats():
     assert es.group_stats([1.0], []) is None
+
+
+def test_the_shared_fixture_gives_the_websites_numbers():
+    """The genome browser's gene panel (web cluster-expression.ts) checks the same fixture."""
+    fixture = json.loads(
+        (_WEB_LIB / "fixtures" / "cluster-expression.json").read_text()
+    )
+    by_ordinal = {c["ordinal"]: c for c in fixture["clusters"]}
+    cells = [{"cluster_ordinal": o} for o in fixture["cell_ordinals"]]
+    groups = es.group_cells(cells, es.cell_types(fixture["clusters"]), "none")
+    for shape, body in fixture["count_files"].items():
+        values = ec._dense(ec._parse(body.encode()), fixture["cell_count"])
+        rows = []
+        for group in groups:
+            stats = es.group_stats(values, group.cells)
+            cluster = by_ordinal.get(fixture["cell_ordinals"][group.cells[0]])
+            rows.append(
+                {
+                    "ordinal": cluster["ordinal"] if cluster else None,
+                    "cluster_id": cluster["cluster_id"] if cluster else None,
+                    "name": cluster["name"] if cluster else None,
+                    "cells": stats.cells,
+                    "expressing": stats.expressing,
+                    "share": stats.share,
+                    "mean": stats.mean,
+                }
+            )
+        assert rows == fixture["expected"], shape

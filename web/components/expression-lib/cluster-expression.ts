@@ -1,0 +1,48 @@
+/** A gene's expression per cluster for the genome browser's gene panel, computed with the dataset
+ * view's own grouping and stats, so the numbers agree with it and with bloommcp. */
+
+import { cellTypes, groupCells, groupStats } from "./gene-stats";
+
+export interface ClusterRow {
+  /** The cluster's ordinal, or null for cells in no known cluster (always last). */
+  ordinal: number | null;
+  cluster_id: string | null;
+  /** The predicted cell-type name, when there is one. */
+  name: string | null;
+  cells: number;
+  expressing: number;
+  share: number;
+  mean: number;
+}
+
+type Cluster = { ordinal: number; cluster_id: string; name: string | null };
+
+/** One row per non-empty cluster in ordinal order, never merged by name, then cells in no known
+ * cluster; mean over all of a group's cells, expressing meaning above 0. */
+export function clusterExpression(
+  values: ArrayLike<number>,
+  cellOrdinals: readonly number[],
+  clusters: readonly Cluster[],
+): ClusterRow[] {
+  const types = cellTypes(clusters.map((c) => ({ ...c, color: null })));
+  const byOrdinal = new Map(clusters.map((c) => [c.ordinal, c]));
+  const groups = groupCells(
+    cellOrdinals.map((cluster_ordinal) => ({ cluster_ordinal })),
+    types,
+    "none",
+  );
+  return groups.map((group) => {
+    const stats = groupStats(values, group.cells)!;
+    // A group's cells all share one cluster; names repeat, so the cluster is read from its cells.
+    const cluster = byOrdinal.get(cellOrdinals[group.cells[0]]);
+    return {
+      ordinal: cluster?.ordinal ?? null,
+      cluster_id: cluster?.cluster_id ?? null,
+      name: cluster?.name ?? null,
+      cells: stats.n,
+      expressing: stats.expressing,
+      share: stats.share,
+      mean: stats.mean,
+    };
+  });
+}
