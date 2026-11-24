@@ -1,6 +1,6 @@
 /** The genome selector beside the gene search: which genomes it offers, and the views each opens. */
 
-import type { LoadedBrowserConfig } from "./bloom-genomes";
+import { OUTSIDE_GENE_TRACK, type LoadedBrowserConfig } from "./bloom-genomes";
 import { defaultViews, geneSpan, longestChromosome, type ViewToOpen } from "./launch";
 
 /** A genome the selector offers. */
@@ -12,9 +12,6 @@ export interface GenomeChoice {
 type Assembly = { name: string; displayName?: string };
 type Track = { type?: string; trackId?: string; assemblyNames?: string[] };
 type Loaded = Pick<LoadedBrowserConfig, "bloomGenomes"> & { config: { assemblies: unknown[]; tracks: unknown[] } };
-
-/** An outside assembly's gene track IDs end in `.gene.…` or `.genes.…`; its others are RNA-seq. */
-const GENE_TRACK = /\.genes?\./;
 
 /** Bloom's genome versions in the page's order, then the outside assemblies by name. */
 export function genomeChoices(loaded: Loaded): { bloom: GenomeChoice[]; outside: GenomeChoice[] } {
@@ -33,7 +30,7 @@ export function genomeChoices(loaded: Loaded): { bloom: GenomeChoice[]; outside:
 /** An outside assembly's gene tracks. */
 export function geneTracksOf(config: { tracks: unknown[] }, assembly: string): string[] {
   return (config.tracks as Track[])
-    .filter((t) => t.type === "FeatureTrack" && t.assemblyNames?.includes(assembly) && GENE_TRACK.test(t.trackId ?? ""))
+    .filter((t) => t.type === "FeatureTrack" && t.assemblyNames?.includes(assembly) && OUTSIDE_GENE_TRACK.test(t.trackId ?? ""))
     .map((t) => t.trackId!);
 }
 
