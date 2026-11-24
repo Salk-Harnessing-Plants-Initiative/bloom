@@ -117,6 +117,43 @@ describe("mergeBrowserConfig", () => {
     expect(outside.assemblies).toHaveLength(1);
   });
 
+  it("folds an outside assembly Bloom also holds into Bloom's newest version of it", () => {
+    const hpi = {
+      assemblies: [{ name: "Outside.A" }, { name: "Athaliana.Col-0.HPIv02" }],
+      tracks: [
+        { type: "FeatureTrack", trackId: "outside-genes", assemblyNames: ["Outside.A"] },
+        { type: "FeatureTrack", trackId: "Athaliana.Col-0.HPIv02.gene.sorted.gff3", assemblyNames: ["Athaliana.Col-0.HPIv02"] },
+        { type: "AlignmentsTrack", trackId: "Athaliana.Col-0.HPIv02.long_rnaseq", assemblyNames: ["Athaliana.Col-0.HPIv02"] },
+        {
+          type: "FeatureTrack",
+          trackId: "Athaliana.Col-0.HPIv02.long_rnaseq.stringtie.sorted.gff3",
+          assemblyNames: ["Athaliana.Col-0.HPIv02"],
+        },
+      ],
+      aggregateTextSearchAdapters: [
+        { textSearchAdapterId: "Athaliana.Col-0.HPIv02-index", assemblyNames: ["Athaliana.Col-0.HPIv02"] },
+        { textSearchAdapterId: "Outside.A-index", assemblyNames: ["Outside.A"] },
+      ],
+    };
+    const merged = mergeBrowserConfig(hpi, [{ ...genome, version: 1, buildId: 3 }, genome]);
+    expect(merged.assemblies.map((a) => a.name)).toEqual([
+      "Outside.A",
+      "athaliana.col-0.hpiv02.v1",
+      "athaliana.col-0.hpiv02.v2",
+    ]);
+    const tracks = merged.tracks as { trackId: string; assemblyNames: string[] }[];
+    expect(tracks.slice(0, 3).map((t) => [t.trackId, t.assemblyNames])).toEqual([
+      ["outside-genes", ["Outside.A"]],
+      ["Athaliana.Col-0.HPIv02.long_rnaseq", ["athaliana.col-0.hpiv02.v2"]],
+      ["Athaliana.Col-0.HPIv02.long_rnaseq.stringtie.sorted.gff3", ["athaliana.col-0.hpiv02.v2"]],
+    ]);
+    expect(merged.aggregateTextSearchAdapters).toEqual([
+      { textSearchAdapterId: "Athaliana.Col-0.HPIv02-index", assemblyNames: ["athaliana.col-0.hpiv02.v2"] },
+      { textSearchAdapterId: "Outside.A-index", assemblyNames: ["Outside.A"] },
+    ]);
+    expect(hpi.assemblies).toHaveLength(2);
+  });
+
   it("is the outside config when Bloom has nothing browsable", () => {
     expect(mergeBrowserConfig(outside, [])).toEqual(outside);
   });

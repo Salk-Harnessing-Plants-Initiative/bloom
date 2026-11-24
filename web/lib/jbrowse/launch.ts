@@ -1,4 +1,4 @@
-import { geneTrackId, sequenceTrackId, type LoadedBrowserConfig } from "./bloom-genomes";
+import { geneTrackId, parseGenomeVersion, sequenceTrackId, type LoadedBrowserConfig } from "./bloom-genomes";
 import { densityTrackId } from "./gene-density";
 import type { GenePlace } from "./gene-links";
 import type { PicksPlan } from "./several-genes";
@@ -20,6 +20,9 @@ export interface LaunchPlan extends LaunchTarget {
 /** The link parameters the browser page reads; a link with none of them opens the default. */
 const BROWSER_PARAMS = ["genome", "reference", "gene", "genes", "loc", "missing"];
 
+/** The genome the browser opens when a link names none, at its newest offered version. */
+export const DEFAULT_GENOME = "athaliana.col-0.hpiv02";
+
 /** How much of the longest chromosome the default gene view shows, bp. */
 export const DEFAULT_SPAN_BP = 50_000;
 
@@ -39,13 +42,22 @@ export function launchTarget(params: URLSearchParams): LaunchTarget | null {
   return assembly && loc ? { assembly, loc } : null;
 }
 
+/** The newest offered version of a Bloom genome, also the copy an outside assembly of the same
+ * name (in lowercase) is folded into. */
+function newestVersionOf(genome: string, bloomGenomes: string[]): string | undefined {
+  return bloomGenomes
+    .filter((name) => parseGenomeVersion(name)?.genome === genome)
+    .sort((a, b) => parseGenomeVersion(b)!.version - parseGenomeVersion(a)!.version)[0];
+}
+
 /** True when the link has none of the browser page's parameters. */
 export function namesNothing(params: URLSearchParams): boolean {
   return BROWSER_PARAMS.every((name) => !params.has(name));
 }
 
 /** The target if the browser offers its assembly, else null (the page says why). With no target
- * and `useDefault`, the most recently built Bloom genome version (highest browser build). */
+ * and `useDefault`, `DEFAULT_GENOME`'s newest offered version, else the most recently built Bloom
+ * genome version (highest browser build). */
 export function launchPlan(
   target: LaunchTarget | null,
   loaded: Pick<LoadedBrowserConfig, "config" | "bloomGenomes" | "bloomBuilds">,
@@ -53,10 +65,15 @@ export function launchPlan(
 ): LaunchPlan | null {
   if (!target) {
     if (!useDefault) return null;
-    const newest = [...loaded.bloomGenomes].sort((a, b) => loaded.bloomBuilds[b] - loaded.bloomBuilds[a])[0];
+    const preferred = newestVersionOf(DEFAULT_GENOME, loaded.bloomGenomes);
+    const newest =
+      preferred ?? [...loaded.bloomGenomes].sort((a, b) => loaded.bloomBuilds[b] - loaded.bloomBuilds[a])[0];
     return newest ? { assembly: newest, tracks: bloomTracks(newest), firstRegion: true } : null;
   }
-  if (!loaded.config.assemblies.some((a) => a.name === target.assembly)) return null;
+  if (!loaded.config.assemblies.some((a) => a.name === target.assembly)) {
+    const folded = newestVersionOf(target.assembly.toLowerCase(), loaded.bloomGenomes);
+    return folded ? launchPlan({ ...target, assembly: folded }, loaded) : null;
+  }
   const tracks = loaded.bloomGenomes.includes(target.assembly) ? bloomTracks(target.assembly) : [];
   return { ...target, tracks };
 }

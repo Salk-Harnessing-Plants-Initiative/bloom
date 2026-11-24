@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { browserConfig } from "./config";
 import type { GenePlace } from "./gene-links";
-import { DEFAULT_SPAN_BP, bloomTracks, defaultViews, launchPlan, launchTarget, namesNothing, picksToOpen } from "./launch";
+import { DEFAULT_GENOME, DEFAULT_SPAN_BP, bloomTracks, defaultViews, launchPlan, launchTarget, namesNothing, picksToOpen } from "./launch";
 
 const params = (query: string) => new URLSearchParams(query);
 
@@ -71,6 +71,16 @@ describe("launchPlan", () => {
     expect(launchPlan(null, two, true)).toEqual({ assembly: "a.v1", tracks: ["a.v1-genes"], firstRegion: true });
   });
 
+  it("prefers Bloom's default genome, Arabidopsis HPIv02, at its newest version, when it is offered", () => {
+    const withDefault = {
+      config: { assemblies: [], tracks: [] },
+      bloomGenomes: ["athaliana.col-0.hpiv02.v1", "athaliana.col-0.hpiv02.v2", "osativa.nipponbare.hpiv3.v1"],
+      bloomBuilds: { "athaliana.col-0.hpiv02.v1": 1, "athaliana.col-0.hpiv02.v2": 2, "osativa.nipponbare.hpiv3.v1": 9 },
+    };
+    expect(DEFAULT_GENOME).toBe("athaliana.col-0.hpiv02");
+    expect(launchPlan(null, withDefault, true)?.assembly).toBe("athaliana.col-0.hpiv02.v2");
+  });
+
   it("opens no default for a link it does not recognise", () => {
     expect(launchPlan(null, two, false)).toBeNull();
     expect(launchPlan(null, two)).toBeNull();
@@ -78,6 +88,19 @@ describe("launchPlan", () => {
 
   it("opens nothing when the link names nothing and Bloom offers no genome", () => {
     expect(launchPlan(null, { ...loaded, bloomGenomes: [], bloomBuilds: {} }, true)).toBeNull();
+  });
+
+  it("sends a link to an outside assembly Bloom folded in to Bloom's newest version of it", () => {
+    const folded = {
+      config: { assemblies: [{ name: "athaliana.col-0.hpiv02.v1" }, { name: "athaliana.col-0.hpiv02.v2" }], tracks: [] },
+      bloomGenomes: ["athaliana.col-0.hpiv02.v1", "athaliana.col-0.hpiv02.v2"],
+      bloomBuilds: { "athaliana.col-0.hpiv02.v1": 1, "athaliana.col-0.hpiv02.v2": 2 },
+    };
+    expect(launchPlan({ assembly: "Athaliana.Col-0.HPIv02", loc: "AT1G01010" }, folded)).toEqual({
+      assembly: "athaliana.col-0.hpiv02.v2",
+      loc: "AT1G01010",
+      tracks: ["athaliana.col-0.hpiv02.v2-genes"],
+    });
   });
 
   it("adds no track for an outside assembly", () => {

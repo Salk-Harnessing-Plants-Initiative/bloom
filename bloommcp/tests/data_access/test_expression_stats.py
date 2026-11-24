@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
+import pytest
+
+from bloom_mcp.data_access import expression_counts as ec
 from bloom_mcp.data_access import expression_stats as es
+from bloom_mcp.data_access.fake_file_reader import FakeFileReader
 
 _WEB_LIB = Path(__file__).resolve().parents[3] / "web" / "components" / "expression-lib"
 
@@ -106,3 +111,39 @@ def test_quartiles_interpolate_as_the_website_does():
 
 def test_a_group_with_no_cells_has_no_stats():
     assert es.group_stats([1.0], []) is None
+
+
+def test_the_shared_fixture_gives_the_websites_numbers():
+    """bloommcp's reader, grouping and stats on the fixture the genome browser's gene panel checks
+    (web cluster-expression.ts); the row labels here only line rows up with the fixture.
+    """
+    fixture = json.loads(
+        (_WEB_LIB / "fixtures" / "cluster-expression.json").read_text()
+    )
+    by_ordinal = {c["ordinal"]: c for c in fixture["clusters"]}
+    ordinals = fixture["cell_ordinals"]
+    groups = es.group_cells(
+        [{"cluster_ordinal": o} for o in ordinals],
+        es.cell_types(fixture["clusters"]),
+        "none",
+    )
+    for shape, body in fixture["count_files"].items():
+        path = f"counts/fixture/{shape}.json"
+        files = FakeFileReader({(ec.BUCKET, path): body.encode()})
+        values = ec.gene_values(files, path, fixture["cell_count"])
+        rows = []
+        for group in groups:
+            stats = es.group_stats(values, group.cells)
+            cluster = by_ordinal.get(ordinals[group.cells[0]]) or {}
+            rows.append(
+                {
+                    "ordinal": cluster.get("ordinal"),
+                    "cluster_id": cluster.get("cluster_id"),
+                    "name": cluster.get("name") or None,
+                    "cells": stats.cells,
+                    "expressing": stats.expressing,
+                    "share": stats.share,
+                    "mean": pytest.approx(stats.mean, abs=1e-6),
+                }
+            )
+        assert rows == fixture["expected"], shape

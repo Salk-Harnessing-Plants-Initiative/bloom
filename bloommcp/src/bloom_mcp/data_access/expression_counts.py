@@ -3,7 +3,7 @@
 The file is the one its scrna_counts row names (never a path built from names: production
 holds two path shapes). It names only the cells where the gene is expressed, keyed by cell
 number, as one object {"248": 1.62} or, in older files, a list of them [{"248": 1.62}],
-as the website reads it (web/components/expression-lib/scrna-client.ts fetchGeneCounts).
+as the website reads it (web/components/expression-lib/gene-counts.ts readGeneCounts).
 """
 
 from __future__ import annotations

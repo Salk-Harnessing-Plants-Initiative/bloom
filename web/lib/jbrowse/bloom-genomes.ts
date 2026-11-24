@@ -119,14 +119,39 @@ export function bloomGenomeConfig(g: BloomGenome) {
   };
 }
 
-/** The outside assemblies followed by Bloom's genomes. */
+/** An outside assembly's gene track IDs end in `.gene.…` or `.genes.…`; its others are RNA-seq. */
+export const OUTSIDE_GENE_TRACK = /\.genes?\./;
+
+type OutsideTrack = { type?: string; trackId?: string; assemblyNames?: string[] };
+
+/** The outside assemblies followed by Bloom's genomes. An outside assembly Bloom also holds (the
+ * same name in lowercase) is folded into Bloom's newest version of it: its RNA-seq tracks and text
+ * index move there, and its own gene track, the same genes, is left out. */
 export function mergeBrowserConfig(outside: BrowserConfig, genomes: BloomGenome[]): BrowserConfig {
   if (genomes.length === 0) return outside;
   const bloom = genomes.map(bloomGenomeConfig);
+  const newest = new Map<string, BloomGenome>();
+  for (const g of genomes) if ((newest.get(g.genome)?.version ?? 0) < g.version) newest.set(g.genome, g);
+  const foldedInto = new Map<string, string>();
+  for (const a of outside.assemblies) {
+    const g = newest.get(a.name.toLowerCase());
+    if (g) foldedInto.set(a.name, assemblyName(g.genome, g.version));
+  }
+  const rename = (names: string[] = []) => names.map((n) => foldedInto.get(n) ?? n);
+  const folded = (names: string[] = []) => names.some((n) => foldedInto.has(n));
+  const tracks = (outside.tracks as OutsideTrack[])
+    .filter((t) => !(folded(t.assemblyNames) && t.type === "FeatureTrack" && OUTSIDE_GENE_TRACK.test(t.trackId ?? "")))
+    .map((t) => (folded(t.assemblyNames) ? { ...t, assemblyNames: rename(t.assemblyNames) } : t));
+  const searches = outside.aggregateTextSearchAdapters as { assemblyNames?: string[] }[] | undefined;
   return {
     ...outside,
-    assemblies: [...outside.assemblies, ...bloom.map((b) => b.assembly)],
-    tracks: [...outside.tracks, ...bloom.flatMap((b) => [b.track, b.density])],
+    assemblies: [...outside.assemblies.filter((a) => !foldedInto.has(a.name)), ...bloom.map((b) => b.assembly)],
+    tracks: [...tracks, ...bloom.flatMap((b) => [b.track, b.density])],
+    ...(searches && {
+      aggregateTextSearchAdapters: searches.map((a) =>
+        folded(a.assemblyNames) ? { ...a, assemblyNames: rename(a.assemblyNames) } : a,
+      ),
+    }),
   };
 }
 
