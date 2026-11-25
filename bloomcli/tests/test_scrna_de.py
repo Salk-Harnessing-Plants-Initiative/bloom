@@ -82,6 +82,19 @@ def test_each_cluster_is_compared_with_the_rest_with_its_size():
     assert result.method == "scanpy-wilcoxon-one-vs-rest"
 
 
+@pytest.mark.parametrize("method,name", [
+    ("wilcoxon", "scanpy-wilcoxon-one-vs-rest"),
+    ("t-test_overestim_var", "scanpy-t-test_overestim_var-one-vs-rest"),
+    ("negative binomial GLM, Wald test", "negative binomial GLM, Wald test-one-vs-rest"),
+    (None, "unknown-one-vs-rest"),
+    ("  ", "unknown-one-vs-rest"),
+])
+def test_only_scanpys_own_methods_are_named_scanpy(method, name):
+    stored = _stored()
+    stored["params"]["method"] = method
+    assert _de._result(stored, "de", "leiden", CELLS).method == name
+
+
 def test_gene_values_are_stored_as_the_table_takes_them():
     a, b = _result().comparisons
     g1, g2 = a.genes  # G3 has no p-value, so it wasn't tested and is left out
